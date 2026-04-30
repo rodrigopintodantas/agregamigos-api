@@ -5,7 +5,8 @@ services:
     env_file:
       - .env
     ports:
-      - "3000:3000"
+      # Hostinger host port (evita conflito com base-api:3000 e escala-agro-api:4001)
+      - "4002:3000"
     depends_on:
       - postgres
     restart: unless-stopped
