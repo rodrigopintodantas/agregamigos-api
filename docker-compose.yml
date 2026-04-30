@@ -1,0 +1,27 @@
+services:
+  api:
+    build: .
+    container_name: agregamigos-api
+    env_file:
+      - .env
+    ports:
+      - "3000:3000"
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:12.3
+    container_name: agregamigos-postgres
+    environment:
+      POSTGRES_DB: agregamigos
+      POSTGRES_USER: agregamigos
+      POSTGRES_PASSWORD: initial123
+    ports:
+      - "5457:5432"
+    volumes:
+      - agregamigos-postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  agregamigos-postgres-data:
