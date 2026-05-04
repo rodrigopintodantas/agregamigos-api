@@ -172,21 +172,20 @@ router.get("/", authBearerLogin(), async (req, res, next) => {
 router.get("/estatisticas", authBearerLogin(), async (req, res, next) => {
   try {
     const totalCadastros = await PessoaModel.count();
-    const topBairros = await sequelize.query(
+    const bairrosAgg = await sequelize.query(
       `
       SELECT TRIM(bairro) AS bairro, COUNT(*)::integer AS quantidade
       FROM endereco
       WHERE bairro IS NOT NULL AND TRIM(bairro) <> ''
       GROUP BY TRIM(bairro)
       ORDER BY quantidade DESC, TRIM(bairro) ASC
-      LIMIT 6
       `,
       { type: QueryTypes.SELECT },
     );
 
     return res.json({
       total_cadastros: totalCadastros,
-      bairros: topBairros.map((row) => ({
+      bairros: bairrosAgg.map((row) => ({
         bairro: row.bairro,
         quantidade: Number(row.quantidade),
       })),

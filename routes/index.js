@@ -15,5 +15,6 @@ router.get("/", (req, res) => {
 
 router.use("/auth", require("./auth"));
 router.use("/pessoas", require("./pessoas"));
+router.use("/modelos-mensagem", require("./modelos-mensagem"));
 
 module.exports = router;
