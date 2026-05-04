@@ -8,6 +8,132 @@ function limparNumeros(value) {
   return value != null ? String(value).replace(/\D/g, "") : "";
 }
 
+function normalizarTexto(value) {
+  return String(value ?? "")
+    .replace(/^\uFEFF/g, "")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function obterCampo(rowMap, aliases) {
+  for (const alias of aliases) {
+    const key = normalizarTexto(alias);
+    if (rowMap[key] != null && String(rowMap[key]).trim() !== "") {
+      return rowMap[key];
+    }
+  }
+  return null;
+}
+
+function obterCampoEmail(rowMap, rawRow) {
+  // Coluna renomeada para "email" no CSV — prioridade explícita.
+  const diretoMapa =
+    rowMap.email ??
+    rowMap["e mail"] ??
+    obterCampo(rowMap, [
+      "email",
+      "Email",
+      "E-mail",
+      "Endereço de e-mail",
+      "Endereco de e-mail",
+      "Endereco de email",
+      "Endereço de email",
+    ]);
+  if (diretoMapa != null && String(diretoMapa).trim() !== "") return diretoMapa;
+
+  // Propriedades diretas no objeto (mesmo nome que veio no JSON, sem passar pelo mapa).
+  if (rawRow && typeof rawRow === "object") {
+    const candidatos = [rawRow.email, rawRow.Email, rawRow["E-mail"], rawRow["email"]];
+    for (const c of candidatos) {
+      if (c != null && String(c).trim() !== "") return c;
+    }
+  }
+
+  const porAliasLegado = obterCampo(rowMap, [
+    "Endereço de e-mail",
+    "Endereco de e-mail",
+    "Endereco de email",
+    "Endereço de email",
+    "E-mail",
+    "Email",
+  ]);
+  if (porAliasLegado != null) return porAliasLegado;
+
+  // Fallback: localizar coluna de e-mail pelo texto normalizado.
+  // NUNCA usar apenas "includes('mail')" — isso casa com "instagram" (contém "mail").
+  const keys = Object.keys(rowMap);
+  const emailKey = keys.find((key) => {
+    if (key.includes("instagram")) return false;
+    if (key === "email") return true;
+    if (key.includes("e mail") || key.includes("e-mail")) return true;
+    if (key.includes("endereco") && (key.includes("mail") || key.includes("email"))) return true;
+    if (/(^|\s)email($|\s)/.test(key)) return true;
+    return false;
+  });
+  if (emailKey) return rowMap[emailKey];
+
+  // Último recurso: algum valor da linha parece e-mail (desalinhamento de colunas).
+  if (rawRow && typeof rawRow === "object") {
+    for (const v of Object.values(rawRow)) {
+      const s = String(v ?? "").trim();
+      if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s)) return s;
+    }
+  }
+
+  return null;
+}
+
+function parseDateTime(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+
+  const iso = new Date(raw);
+  if (!Number.isNaN(iso.getTime())) return iso;
+
+  const brMatch = raw.match(
+    /^(\d{2})\/(\d{2})\/(\d{4})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?$/,
+  );
+  if (!brMatch) return null;
+
+  const [, dia, mes, ano, hora = "00", minuto = "00", segundo = "00"] = brMatch;
+  const parsed = new Date(
+    Number(ano),
+    Number(mes) - 1,
+    Number(dia),
+    Number(hora),
+    Number(minuto),
+    Number(segundo),
+  );
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function parseDateOnly(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+
+  const isoMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) return raw;
+
+  const brMatch = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (brMatch) {
+    const [, dia, mes, ano] = brMatch;
+    return `${ano}-${mes}-${dia}`;
+  }
+
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return null;
+
+  const year = parsed.getFullYear();
+  const month = String(parsed.getMonth() + 1).padStart(2, "0");
+  const day = String(parsed.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 router.get("/", authBearerLogin(), async (req, res, next) => {
   try {
     const pessoas = await PessoaModel.findAll({
@@ -21,6 +147,8 @@ router.get("/", authBearerLogin(), async (req, res, next) => {
         data_nascimento: p.dataNascimento ?? null,
         email: p.email ?? null,
         whatsapp: p.whatsapp ?? null,
+        instagram: p.instagram ?? null,
+        indicacao: p.indicacao ?? null,
         endereco: p.EnderecoModel
           ? {
               cep: p.EnderecoModel.cep ?? null,
@@ -49,6 +177,8 @@ router.post("/", authBearerLogin(), async (req, res, next) => {
         : null;
     const email = req.body?.email != null ? String(req.body.email).trim().toLowerCase() : "";
     const whatsapp = req.body?.whatsapp != null ? String(req.body.whatsapp).trim() : "";
+    const instagram = req.body?.instagram != null ? String(req.body.instagram).trim() : "";
+    const indicacao = req.body?.indicacao != null ? String(req.body.indicacao).trim() : "";
     const endereco = req.body?.endereco ?? {};
 
     if (nome.length < 3) {
@@ -71,6 +201,8 @@ router.post("/", authBearerLogin(), async (req, res, next) => {
           dataNascimento,
           email: email || null,
           whatsapp: whatsapp || null,
+          instagram: instagram || null,
+          indicacao: indicacao || null,
         },
         { transaction },
       );
@@ -108,6 +240,8 @@ router.post("/link-cadastro", async (req, res, next) => {
         : null;
     const email = req.body?.email != null ? String(req.body.email).trim().toLowerCase() : "";
     const whatsapp = req.body?.whatsapp != null ? String(req.body.whatsapp).trim() : "";
+    const instagram = req.body?.instagram != null ? String(req.body.instagram).trim() : "";
+    const indicacao = req.body?.indicacao != null ? String(req.body.indicacao).trim() : "";
     const endereco = req.body?.endereco ?? {};
 
     if (nome.length < 3) {
@@ -130,6 +264,8 @@ router.post("/link-cadastro", async (req, res, next) => {
           dataNascimento,
           email: email || null,
           whatsapp: whatsapp || null,
+          instagram: instagram || null,
+          indicacao: indicacao || null,
         },
         { transaction },
       );
@@ -161,6 +297,105 @@ router.post("/link-cadastro", async (req, res, next) => {
   }
 });
 
+router.post("/importar-csv", authBearerLogin(), async (req, res, next) => {
+  try {
+    const registros = Array.isArray(req.body?.registros) ? req.body.registros : [];
+    if (!registros.length) {
+      return res.status(400).json({ message: "Arquivo CSV sem registros válidos." });
+    }
+
+    const payload = registros
+      .map((item) => {
+        const row = item && typeof item === "object" ? item : {};
+        const rowMap = {};
+        Object.entries(row).forEach(([key, value]) => {
+          rowMap[normalizarTexto(key)] = value;
+        });
+
+        const nome = String(
+          obterCampo(rowMap, ["Nome Completo:", "Nome Completo", "Nome", "nome_completo"]) ?? "",
+        ).trim();
+        if (nome.length < 3) return null;
+
+        const email = String(obterCampoEmail(rowMap, row) ?? "")
+          .trim()
+          .toLowerCase();
+        const whatsapp = limparNumeros(
+          obterCampo(rowMap, ["Telefone com DDD (preferencialmente Whatsapp):", "Telefone com DDD", "Whatsapp"]) ?? "",
+        ).slice(0, 20);
+        const dataNascimento = parseDateOnly(
+          obterCampo(rowMap, ["Data de Nascimento:", "Data de Nascimento"]),
+        );
+        const instagram =
+          String(obterCampo(rowMap, ["Perfil do Instagram:", "Instagram", "Instragram"]) ?? "").trim() ||
+          null;
+        const indicacao =
+          String(obterCampo(rowMap, ["Indicacao", "Indicação"]) ?? "").trim() || null;
+        const logradouro =
+          String(obterCampo(rowMap, ["Endereço:", "Endereco:", "Endereco", "Endereço", "Logradouro", "Logadouro"]) ?? "")
+            .trim() || null;
+        const bairro =
+          String(obterCampo(rowMap, ["Região Administrativa:", "Regiao Administrativa:", "Região Administrativa", "Regiao Administrativa"]) ?? "").trim() ||
+          null;
+        const createdAt = parseDateTime(
+          obterCampo(rowMap, ["Carimbo de data/hora", "Carimbo data/hora", "created_at"]),
+        );
+
+        return {
+          nome,
+          dataNascimento,
+          email: email || null,
+          whatsapp: whatsapp || null,
+          instagram,
+          indicacao,
+          createdAt,
+          endereco: {
+            logradouro,
+            bairro,
+          },
+        };
+      })
+      .filter(Boolean);
+
+    if (!payload.length) {
+      return res.status(400).json({ message: "Nenhum registro válido para importar." });
+    }
+
+    await sequelize.transaction(async (transaction) => {
+      for (const item of payload) {
+        const pessoa = await PessoaModel.create(
+          {
+            nome: item.nome,
+            dataNascimento: item.dataNascimento,
+            email: item.email,
+            whatsapp: item.whatsapp,
+            instagram: item.instagram,
+            indicacao: item.indicacao,
+            ...(item.createdAt ? { createdAt: item.createdAt, updatedAt: item.createdAt } : {}),
+          },
+          { transaction },
+        );
+
+        await EnderecoModel.create(
+          {
+            PessoaModelId: pessoa.id,
+            logradouro: item.endereco.logradouro,
+            bairro: item.endereco.bairro,
+          },
+          { transaction },
+        );
+      }
+    });
+
+    return res.status(201).json({
+      message: `${payload.length} registro(s) importado(s) com sucesso.`,
+      total: payload.length,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.put("/:id", authBearerLogin(), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
@@ -175,6 +410,8 @@ router.put("/:id", authBearerLogin(), async (req, res, next) => {
         : null;
     const email = req.body?.email != null ? String(req.body.email).trim().toLowerCase() : "";
     const whatsapp = req.body?.whatsapp != null ? String(req.body.whatsapp).trim() : "";
+    const instagram = req.body?.instagram != null ? String(req.body.instagram).trim() : "";
+    const indicacao = req.body?.indicacao != null ? String(req.body.indicacao).trim() : "";
     const endereco = req.body?.endereco ?? {};
 
     if (nome.length < 3) {
@@ -200,6 +437,8 @@ router.put("/:id", authBearerLogin(), async (req, res, next) => {
           dataNascimento,
           email: email || null,
           whatsapp: whatsapp || null,
+          instagram: instagram || null,
+          indicacao: indicacao || null,
         },
         { transaction },
       );

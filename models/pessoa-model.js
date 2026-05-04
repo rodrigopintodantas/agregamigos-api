@@ -26,6 +26,14 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.STRING,
         allowNull: true,
       },
+      instagram: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
+      indicacao: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
     },
     { freezeTableName: true, tableName: "pessoa", timestamps: true },
   );
