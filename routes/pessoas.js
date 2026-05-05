@@ -388,8 +388,36 @@ router.post("/importar-csv", authBearerLogin(), async (req, res, next) => {
       return res.status(400).json({ message: "Nenhum registro válido para importar." });
     }
 
+    const pessoasExistentes = await PessoaModel.findAll({ attributes: ["nome"] });
+    const nomesNormalizadosExistentes = new Set(
+      pessoasExistentes
+        .map((pessoa) => normalizarTexto(pessoa.nome))
+        .filter((nome) => nome.length > 0),
+    );
+
+    const payloadSemDuplicados = [];
+    let duplicadosIgnorados = 0;
+    const nomesDuplicados = [];
+    for (const item of payload) {
+      const nomeNormalizado = normalizarTexto(item.nome);
+      if (!nomeNormalizado || nomesNormalizadosExistentes.has(nomeNormalizado)) {
+        duplicadosIgnorados += 1;
+        nomesDuplicados.push(item.nome);
+        continue;
+      }
+
+      nomesNormalizadosExistentes.add(nomeNormalizado);
+      payloadSemDuplicados.push(item);
+    }
+
+    if (!payloadSemDuplicados.length) {
+      return res.status(400).json({
+        message: "Nenhum registro novo para importar. Todos os nomes já existem.",
+      });
+    }
+
     await sequelize.transaction(async (transaction) => {
-      for (const item of payload) {
+      for (const item of payloadSemDuplicados) {
         const pessoa = await PessoaModel.create(
           {
             nome: item.nome,
@@ -414,9 +442,13 @@ router.post("/importar-csv", authBearerLogin(), async (req, res, next) => {
       }
     });
 
+    const sufixoIgnorados =
+      duplicadosIgnorados > 0 ? ` ${duplicadosIgnorados} duplicado(s) ignorado(s).` : "";
+
     return res.status(201).json({
-      message: `${payload.length} registro(s) importado(s) com sucesso.`,
-      total: payload.length,
+      message: `${payloadSemDuplicados.length} registro(s) importado(s) com sucesso.${sufixoIgnorados}`,
+      total: payloadSemDuplicados.length,
+      nomes_duplicados: nomesDuplicados,
     });
   } catch (err) {
     next(err);
