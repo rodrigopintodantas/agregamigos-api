@@ -34,6 +34,11 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.STRING,
         allowNull: true,
       },
+      idCoordenador: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+        field: "id_coordenador",
+      },
     },
     { freezeTableName: true, tableName: "pessoa", timestamps: true },
   );
@@ -42,6 +47,11 @@ module.exports = (sequelize, DataTypes) => {
     PessoaModel.hasOne(models.EnderecoModel, {
       foreignKey: { name: "PessoaModelId", field: "pessoa_id" },
       onDelete: "CASCADE",
+      onUpdate: "CASCADE",
+    });
+    PessoaModel.belongsTo(models.UsuarioModel, {
+      foreignKey: { name: "idCoordenador", field: "id_coordenador" },
+      onDelete: "SET NULL",
       onUpdate: "CASCADE",
     });
   };

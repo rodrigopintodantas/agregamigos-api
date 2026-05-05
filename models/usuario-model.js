@@ -60,6 +60,11 @@ module.exports = (sequelize, DataTypes) => {
       onDelete: "RESTRICT",
       onUpdate: "CASCADE",
     });
+    UsuarioModel.hasMany(models.PessoaModel, {
+      foreignKey: { name: "idCoordenador", field: "id_coordenador" },
+      onDelete: "SET NULL",
+      onUpdate: "CASCADE",
+    });
   };
 
   return UsuarioModel;
