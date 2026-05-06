@@ -1,9 +1,15 @@
+const crypto = require("crypto");
 const express = require("express");
 const { QueryTypes } = require("sequelize");
-const { sequelize, PessoaModel, EnderecoModel } = require("../models");
+const { sequelize, PessoaModel, EnderecoModel, ConsentimentoLgpdModel } = require("../models");
 const { authBearerLogin } = require("../auth/authorize");
 
 const router = express.Router();
+const TERMO_CONSENTIMENTO_ATUAL = {
+  versao: "2026-05-06-v1",
+  texto:
+    "Autorizo o tratamento dos meus dados pessoais para fins de cadastro, contato e gestão do relacionamento, nos termos da LGPD.",
+};
 
 function limparNumeros(value) {
   return value != null ? String(value).replace(/\D/g, "") : "";
@@ -133,6 +139,10 @@ function parseDateOnly(value) {
   const month = String(parsed.getMonth() + 1).padStart(2, "0");
   const day = String(parsed.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function hashTermo(texto) {
+  return crypto.createHash("sha256").update(texto, "utf8").digest("hex");
 }
 
 router.get("/", authBearerLogin(), async (req, res, next) => {
@@ -270,6 +280,10 @@ router.post("/link-cadastro", async (req, res, next) => {
     const instagram = req.body?.instagram != null ? String(req.body.instagram).trim() : "";
     const indicacao = req.body?.indicacao != null ? String(req.body.indicacao).trim() : "";
     const endereco = req.body?.endereco ?? {};
+    const consentimento = req.body?.consentimento ?? {};
+    const aceito = consentimento?.aceito === true;
+    const termoVersao =
+      consentimento?.termo_versao != null ? String(consentimento.termo_versao).trim() : "";
 
     if (nome.length < 3) {
       return res.status(400).json({ message: "Informe nome com pelo menos 3 caracteres." });
@@ -279,6 +293,14 @@ router.post("/link-cadastro", async (req, res, next) => {
     }
     if (dataNascimento && !/^\d{4}-\d{2}-\d{2}$/.test(dataNascimento)) {
       return res.status(400).json({ message: "Data de nascimento inválida." });
+    }
+    if (!aceito) {
+      return res.status(400).json({ message: "É necessário concordar com o termo de consentimento." });
+    }
+    if (termoVersao !== TERMO_CONSENTIMENTO_ATUAL.versao) {
+      return res.status(400).json({
+        message: "Versão do termo de consentimento inválida. Atualize a página e tente novamente.",
+      });
     }
 
     const cep = limparNumeros(endereco.cep || "").slice(0, 8);
@@ -308,6 +330,27 @@ router.post("/link-cadastro", async (req, res, next) => {
           cidade: endereco.cidade ? String(endereco.cidade).trim() : null,
           uf,
           ibge: endereco.ibge ? String(endereco.ibge).trim() : null,
+        },
+        { transaction },
+      );
+
+      const forwarded = req.headers["x-forwarded-for"];
+      const ipOrigem =
+        (Array.isArray(forwarded) ? forwarded[0] : String(forwarded || "").split(",")[0]).trim() ||
+        req.ip ||
+        null;
+      const userAgent = req.headers["user-agent"] ? String(req.headers["user-agent"]).slice(0, 512) : null;
+
+      await ConsentimentoLgpdModel.create(
+        {
+          pessoa_id: pessoa.id,
+          termo_versao: TERMO_CONSENTIMENTO_ATUAL.versao,
+          termo_hash: hashTermo(TERMO_CONSENTIMENTO_ATUAL.texto),
+          aceito: true,
+          aceito_em: new Date(),
+          origem: "link-cadastro-publico",
+          ip_origem: ipOrigem || null,
+          user_agent: userAgent,
         },
         { transaction },
       );
