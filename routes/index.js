@@ -17,5 +17,6 @@ router.use("/auth", require("./auth"));
 router.use("/pessoas", require("./pessoas"));
 router.use("/modelos-mensagem", require("./modelos-mensagem"));
 router.use("/usuarios", require("./usuarios"));
+router.use("/campanhas-divulgacao", require("./campanhas-divulgacao"));
 
 module.exports = router;
