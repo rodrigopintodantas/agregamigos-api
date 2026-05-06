@@ -118,24 +118,26 @@ class WhatsappBaileysService {
     }
     const digits = this.normalizarNumeroBrasil(numero);
     if (!digits) throw new Error("Numero de destino invalido.");
-    const jid = `${digits}@s.whatsapp.net`;
-    const existe = await this.sock.onWhatsApp(jid);
+    const jidDigitado = `${digits}@s.whatsapp.net`;
+    const existe = await this.sock.onWhatsApp(jidDigitado);
     if (!Array.isArray(existe) || !existe.length || !existe[0]?.exists) {
       throw new Error("Numero nao encontrado no WhatsApp.");
     }
+    const jidResolvido = String(existe[0]?.jid || jidDigitado);
 
     const texto = String(mensagem || "").trim();
     if (!texto) {
       throw new Error("Mensagem vazia para envio.");
     }
 
-    const resultado = await this.sock.sendMessage(jid, { text: texto });
+    const resultado = await this.sock.sendMessage(jidResolvido, { text: texto });
     if (!resultado?.key?.id || !resultado?.key?.remoteJid) {
       throw new Error("WhatsApp nao confirmou o envio da mensagem.");
     }
     return {
       numeroNormalizado: digits,
-      jid,
+      jidDigitado,
+      jidResolvido,
       messageId: resultado.key.id,
       remoteJid: resultado.key.remoteJid,
     };

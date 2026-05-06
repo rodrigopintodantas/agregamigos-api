@@ -40,16 +40,16 @@ async function enviarViaApi(numero, mensagem) {
     throw new Error("Resposta invalida no envio interno.");
   }
 
-  if (!body?.message_id || !body?.remote_jid || !body?.jid) {
+  if (!body?.message_id || !body?.remote_jid || !body?.jid_resolvido) {
     throw new Error("Envio interno sem confirmacao completa do WhatsApp.");
   }
-  if (String(body.remote_jid) !== String(body.jid)) {
+  if (String(body.remote_jid) !== String(body.jid_resolvido)) {
     throw new Error("JID de confirmacao divergente do destino.");
   }
 
   return {
     messageId: String(body.message_id),
-    jid: String(body.jid),
+    jid: String(body.jid_resolvido),
     numeroNormalizado: String(body.numero_normalizado || ""),
   };
 }

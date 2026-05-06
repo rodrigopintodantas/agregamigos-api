@@ -55,7 +55,8 @@ router.post("/send-interno", validarChaveInterna, async (req, res, next) => {
     return res.status(200).json({
       message: "Mensagem enviada.",
       numero_normalizado: envio?.numeroNormalizado || null,
-      jid: envio?.jid || null,
+      jid_digitado: envio?.jidDigitado || null,
+      jid_resolvido: envio?.jidResolvido || null,
       message_id: envio?.messageId || null,
       remote_jid: envio?.remoteJid || null,
     });
