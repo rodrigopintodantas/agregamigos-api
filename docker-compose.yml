@@ -9,6 +9,7 @@ services:
       - "4002:3000"
     depends_on:
       - postgres
+      - redis
     restart: unless-stopped
 
   postgres:
@@ -22,6 +23,13 @@ services:
       - "5457:5432"
     volumes:
       - agregamigos-postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: agregamigos-redis
+    ports:
+      - "6380:6379"
     restart: unless-stopped
 
 volumes:

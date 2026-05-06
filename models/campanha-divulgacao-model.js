@@ -28,6 +28,12 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
         defaultValue: 0,
       },
+      mensagens_por_turno: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 2,
+        field: "mensagens_por_turno",
+      },
       usuario_id: {
         type: DataTypes.INTEGER,
         allowNull: true,

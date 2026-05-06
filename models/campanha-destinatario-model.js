@@ -32,6 +32,16 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.STRING(20),
         allowNull: false,
       },
+      turno: {
+        type: DataTypes.STRING(20),
+        allowNull: false,
+        defaultValue: "manha",
+      },
+      agendado_para: {
+        type: DataTypes.DATE,
+        allowNull: true,
+        field: "agendado_para",
+      },
       status: {
         type: DataTypes.STRING(30),
         allowNull: false,

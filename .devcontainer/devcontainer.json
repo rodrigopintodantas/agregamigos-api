@@ -15,7 +15,7 @@
     "TZ": "America/Sao_Paulo",
     "DOCKER_CONTAINER": "true"
   },
-  "forwardPorts": [5457, 3000],
+  "forwardPorts": [5457, 6380, 3000],
   "customizations": {
     "vscode": {
       "extensions": [

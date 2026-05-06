@@ -7,6 +7,7 @@
     "start:with-migrate": "npm run db:migrate && npm run dev",
     "start": "node ./bin/www",
     "dev": "nodemon ./bin/www",
+    "worker:campanha": "node ./workers/campanha-envio-worker.js",
     "db:migrate": "sequelize-cli db:migrate",
     "db:migrate:undo": "sequelize-cli db:migrate:undo",
     "db:create": "sequelize-cli db:create",
@@ -23,16 +24,20 @@
   ],
   "description": "Projeto AgregaAmigos com autenticação e PostgreSQL.",
   "dependencies": {
+    "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "bcryptjs": "^3.0.2",
+    "bullmq": "^5.76.6",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "dotenv": "^17.4.1",
     "express": "^5.2.1",
     "http-errors": "^2.0.1",
+    "ioredis": "^5.10.1",
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.1",
     "pg": "^8.20.0",
     "pg-hstore": "^2.3.4",
+    "qrcode": "^1.5.4",
     "sequelize": "^6.37.8"
   },
   "devDependencies": {
