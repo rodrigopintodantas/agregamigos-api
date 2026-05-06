@@ -44,7 +44,7 @@ async function enfileirarDestinatarios(destinatarios) {
         },
         opts: {
           delay,
-          jobId: `campanha:${Number(d.campanha_id)}:destinatario:${Number(d.id)}`,
+          jobId: `campanha_${Number(d.campanha_id)}_destinatario_${Number(d.id)}`,
         },
       };
     }),

@@ -7,11 +7,51 @@ const {
   ModeloMensagemModel,
   sequelize,
 } = require("../models");
-const whatsappService = require("../services/whatsapp-baileys");
 const { QUEUE_NAME, redisConnection } = require("../queues/campanha-envio-queue");
 
 function limitarErro(err) {
   return String(err?.message || "Falha ao enviar mensagem.").slice(0, 1000);
+}
+
+async function enviarViaApi(numero, mensagem) {
+  const apiUrl = process.env.INTERNAL_API_URL || "http://127.0.0.1:3000/api";
+  const internalApiKey = process.env.INTERNAL_API_KEY || "dev-local-key";
+  const response = await fetch(`${apiUrl}/whatsapp/send-interno`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-internal-api-key": internalApiKey,
+    },
+    body: JSON.stringify({ numero, mensagem }),
+  });
+  if (!response.ok) {
+    let reason = `Falha HTTP ${response.status}`;
+    try {
+      const body = await response.json();
+      reason = String(body?.message || reason);
+    } catch (_err) {}
+    throw new Error(reason);
+  }
+
+  let body = null;
+  try {
+    body = await response.json();
+  } catch (_err) {
+    throw new Error("Resposta invalida no envio interno.");
+  }
+
+  if (!body?.message_id || !body?.remote_jid || !body?.jid) {
+    throw new Error("Envio interno sem confirmacao completa do WhatsApp.");
+  }
+  if (String(body.remote_jid) !== String(body.jid)) {
+    throw new Error("JID de confirmacao divergente do destino.");
+  }
+
+  return {
+    messageId: String(body.message_id),
+    jid: String(body.jid),
+    numeroNormalizado: String(body.numero_normalizado || ""),
+  };
 }
 
 async function atualizarResumoCampanha(campanhaId) {
@@ -81,13 +121,13 @@ async function processarEnvio(job) {
 
   const transaction = await sequelize.transaction();
   try {
-    await whatsappService.sendText(numero, mensagem);
+    const envio = await enviarViaApi(numero, mensagem);
     await destinatario.update(
       {
         status: "enviado",
         tentativas: destinatario.tentativas + 1,
         enviado_em: new Date(),
-        erro_ultimo: null,
+        erro_ultimo: `OK message_id=${envio.messageId} jid=${envio.jid}`,
       },
       { transaction },
     );

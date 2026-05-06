@@ -69,7 +69,6 @@ function mesmoDia(a, b) {
 
 function gerarAgendamentoPorDisparo(index, mensagensPorTurno, disparoEm, usedKeys) {
   const baseInicial = new Date(disparoEm);
-  baseInicial.setSeconds(0, 0);
   const primeiroEnvio = new Date(baseInicial.getTime() + 60 * 1000);
 
   if (index === 0) {
@@ -116,7 +115,7 @@ function gerarAgendamentoPorDisparo(index, mensagensPorTurno, disparoEm, usedKey
   while (usedKeys.has(key)) {
     candidate = new Date(candidate.getTime() + 60 * 1000);
     if (candidate <= primeiroEnvio) {
-      candidate = new Date(primeiroEnvio.getTime() + 60 * 1000);
+      candidate = new Date(primeiroEnvio.getTime() + 1);
     }
     key = candidate.toISOString();
   }

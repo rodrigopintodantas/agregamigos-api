@@ -116,10 +116,59 @@ class WhatsappBaileysService {
     if (!this.sock || !this.estado.conectado) {
       throw new Error("Canal WhatsApp nao conectado.");
     }
-    const digits = String(numero || "").replace(/\D/g, "");
+    const digits = this.normalizarNumeroBrasil(numero);
     if (!digits) throw new Error("Numero de destino invalido.");
     const jid = `${digits}@s.whatsapp.net`;
-    await this.sock.sendMessage(jid, { text: String(mensagem || "").trim() });
+    const existe = await this.sock.onWhatsApp(jid);
+    if (!Array.isArray(existe) || !existe.length || !existe[0]?.exists) {
+      throw new Error("Numero nao encontrado no WhatsApp.");
+    }
+
+    const texto = String(mensagem || "").trim();
+    if (!texto) {
+      throw new Error("Mensagem vazia para envio.");
+    }
+
+    const resultado = await this.sock.sendMessage(jid, { text: texto });
+    if (!resultado?.key?.id || !resultado?.key?.remoteJid) {
+      throw new Error("WhatsApp nao confirmou o envio da mensagem.");
+    }
+    return {
+      numeroNormalizado: digits,
+      jid,
+      messageId: resultado.key.id,
+      remoteJid: resultado.key.remoteJid,
+    };
+  }
+
+  normalizarNumeroBrasil(numero) {
+    let digits = String(numero || "").replace(/\D/g, "");
+    if (!digits) return "";
+
+    // Remove prefixo internacional 00...
+    digits = digits.replace(/^00+/, "");
+
+    // Remove tronco nacional com operadora (ex.: 01511999999999 -> 11999999999)
+    const matchComOperadora = digits.match(/^0\d{2}(\d{10,11})$/);
+    if (matchComOperadora?.[1]) {
+      digits = matchComOperadora[1];
+    } else {
+      // Remove zero de tronco nacional simples (ex.: 011999999999 -> 11999999999)
+      digits = digits.replace(/^0+/, "");
+    }
+
+    // Ja internacional BR
+    if ((digits.length === 12 || digits.length === 13) && digits.startsWith("55")) {
+      return digits;
+    }
+
+    // Nacional BR sem DDI
+    if (digits.length === 10 || digits.length === 11) {
+      return `55${digits}`;
+    }
+
+    // Mantem fallback para outros formatos internacionais (MVP)
+    return digits;
   }
 
   atualizarEstado(parcial) {
