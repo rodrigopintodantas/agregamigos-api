@@ -220,4 +220,29 @@ router.post("/", apenasAdmin, async (req, res, next) => {
   }
 });
 
+router.delete("/:id", apenasAdmin, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ message: "ID invalido." });
+    }
+
+    const campanha = await CampanhaDivulgacaoModel.findByPk(id);
+    if (!campanha) {
+      return res.status(404).json({ message: "Campanha nao encontrada." });
+    }
+
+    if (String(campanha.status) !== "montada") {
+      return res.status(400).json({
+        message: "A campanha so pode ser excluida quando estiver no status Montada.",
+      });
+    }
+
+    await campanha.destroy();
+    return res.status(200).json({ message: "Campanha excluida com sucesso." });
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;
