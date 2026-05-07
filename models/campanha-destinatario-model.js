@@ -62,6 +62,22 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: true,
         field: "erro_ultimo",
       },
+      falha_entrega: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+        field: "falha_entrega",
+      },
+      falha_codigo: {
+        type: DataTypes.STRING(60),
+        allowNull: true,
+        field: "falha_codigo",
+      },
+      falha_em: {
+        type: DataTypes.DATE,
+        allowNull: true,
+        field: "falha_em",
+      },
     },
     {
       freezeTableName: true,

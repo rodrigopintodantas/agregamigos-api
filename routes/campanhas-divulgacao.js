@@ -283,6 +283,9 @@ router.get("/:id", apenasAdmin, async (req, res, next) => {
         agendado_para: item.agendado_para ?? null,
         tentativas: item.tentativas,
         enviado_em: item.enviado_em,
+        falha_entrega: item.falha_entrega ?? false,
+        falha_codigo: item.falha_codigo ?? null,
+        falha_em: item.falha_em ?? null,
         erro_ultimo: item.erro_ultimo,
         pessoa: item.PessoaModel
           ? {
@@ -472,7 +475,13 @@ router.post("/:id/reprocessar-erros", apenasAdmin, async (req, res, next) => {
     }
 
     const [totalAtualizados] = await CampanhaDestinatarioModel.update(
-      { status: "pendente", erro_ultimo: null },
+      {
+        status: "pendente",
+        erro_ultimo: null,
+        falha_entrega: false,
+        falha_codigo: null,
+        falha_em: null,
+      },
       {
         where: {
           campanha_id: id,

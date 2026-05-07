@@ -16,6 +16,17 @@ function limitarErro(err) {
   return String(err?.message || "Falha ao enviar mensagem.").slice(0, 1000);
 }
 
+function identificarFalhaCodigo(err) {
+  const msg = String(err?.message || "").toLowerCase();
+  if (msg.includes("numero nao encontrado")) return "nao_whatsapp";
+  if (msg.includes("numero invalido") || msg.includes("whatsapp invalido")) return "numero_invalido";
+  if (msg.includes("canal whatsapp nao conectado")) return "canal_desconectado";
+  if (msg.includes("jid de confirmacao divergente")) return "jid_divergente";
+  if (msg.includes("confirmacao completa")) return "confirmacao_incompleta";
+  if (msg.includes("timeout")) return "timeout_ack";
+  return "envio_falhou";
+}
+
 function aplicarVariaveisMensagem(template, pessoa) {
   const texto = String(template || "");
   const nomeCompleto = String(pessoa?.nome || "").trim();
@@ -119,6 +130,9 @@ async function processarEnvio(job) {
   if (String(campanha.status) === "cancelada") {
     await destinatario.update({
       status: "cancelado",
+      falha_entrega: false,
+      falha_codigo: null,
+      falha_em: null,
       erro_ultimo: "Envio interrompido: campanha cancelada.",
     });
     await atualizarResumoCampanha(campanhaId);
@@ -130,6 +144,9 @@ async function processarEnvio(job) {
     await destinatario.update({
       status: "erro",
       tentativas: destinatario.tentativas + 1,
+      falha_entrega: true,
+      falha_codigo: "numero_invalido",
+      falha_em: new Date(),
       erro_ultimo: "WhatsApp invalido para envio.",
     });
     await atualizarResumoCampanha(campanhaId);
@@ -144,6 +161,9 @@ async function processarEnvio(job) {
     await destinatario.update({
       status: "erro",
       tentativas: destinatario.tentativas + 1,
+      falha_entrega: true,
+      falha_codigo: "mensagem_vazia",
+      falha_em: new Date(),
       erro_ultimo: "Modelo sem corpo para envio.",
     });
     await atualizarResumoCampanha(campanhaId);
@@ -158,6 +178,9 @@ async function processarEnvio(job) {
         status: "enviado",
         tentativas: destinatario.tentativas + 1,
         enviado_em: new Date(),
+        falha_entrega: false,
+        falha_codigo: null,
+        falha_em: null,
         erro_ultimo: `OK message_id=${envio.messageId} jid=${envio.jid}`,
       },
       { transaction },
@@ -165,9 +188,13 @@ async function processarEnvio(job) {
     await transaction.commit();
   } catch (err) {
     await transaction.rollback();
+    const falhaCodigo = identificarFalhaCodigo(err);
     await destinatario.update({
       status: "erro",
       tentativas: destinatario.tentativas + 1,
+      falha_entrega: true,
+      falha_codigo: falhaCodigo,
+      falha_em: new Date(),
       erro_ultimo: limitarErro(err),
     });
     throw err;
