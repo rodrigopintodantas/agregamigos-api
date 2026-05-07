@@ -5,12 +5,30 @@ const {
   CampanhaDivulgacaoModel,
   CampanhaDestinatarioModel,
   ModeloMensagemModel,
+  PessoaModel,
+  EnderecoModel,
+  UsuarioModel,
   sequelize,
 } = require("../models");
 const { QUEUE_NAME, redisConnection } = require("../queues/campanha-envio-queue");
 
 function limitarErro(err) {
   return String(err?.message || "Falha ao enviar mensagem.").slice(0, 1000);
+}
+
+function aplicarVariaveisMensagem(template, pessoa) {
+  const texto = String(template || "");
+  const nomeCompleto = String(pessoa?.nome || "").trim();
+  const primeiroNome = nomeCompleto ? nomeCompleto.split(/\s+/)[0] : "";
+  const bairro = String(pessoa?.EnderecoModel?.bairro || pessoa?.EnderecoModel?.cidade || "").trim();
+  const nomeCoordenador = String(pessoa?.UsuarioModel?.nome || "").trim();
+
+  return texto
+    .replace(/\{\{\s*nome\s*\}\}/gi, nomeCompleto)
+    .replace(/\{\{\s*primeiro_nome\s*\}\}/gi, primeiroNome)
+    .replace(/\{\{\s*bairro\s*\}\}/gi, bairro)
+    .replace(/\{\{\s*nome_coordenador\s*\}\}/gi, nomeCoordenador)
+    .replace(/XXXX/g, nomeCompleto);
 }
 
 async function enviarViaApi(numero, mensagem) {
@@ -79,7 +97,17 @@ async function processarEnvio(job) {
 
   const destinatario = await CampanhaDestinatarioModel.findOne({
     where: { id: destinatarioId, campanha_id: campanhaId },
-    include: [{ model: ModeloMensagemModel, attributes: ["id", "corpo"] }],
+    include: [
+      { model: ModeloMensagemModel, attributes: ["id", "corpo"] },
+      {
+        model: PessoaModel,
+        attributes: ["id", "nome"],
+        include: [
+          { model: EnderecoModel, attributes: ["bairro", "cidade"], required: false },
+          { model: UsuarioModel, attributes: ["nome"], required: false },
+        ],
+      },
+    ],
   });
   if (!destinatario) return;
   if (String(destinatario.status) !== "pendente") return;
@@ -108,7 +136,10 @@ async function processarEnvio(job) {
     return;
   }
 
-  const mensagem = String(destinatario.ModeloMensagemModel?.corpo || "").trim();
+  const mensagem = aplicarVariaveisMensagem(
+    destinatario.ModeloMensagemModel?.corpo,
+    destinatario.PessoaModel,
+  ).trim();
   if (!mensagem) {
     await destinatario.update({
       status: "erro",

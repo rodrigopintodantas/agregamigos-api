@@ -4,6 +4,8 @@ const {
   CampanhaDivulgacaoModel,
   CampanhaDestinatarioModel,
   PessoaModel,
+  EnderecoModel,
+  UsuarioModel,
   ModeloMensagemModel,
 } = require("../models");
 const { authorize } = require("../auth/authorize");
@@ -251,8 +253,15 @@ router.get("/:id", apenasAdmin, async (req, res, next) => {
     const itens = await CampanhaDestinatarioModel.findAll({
       where: { campanha_id: id },
       include: [
-        { model: PessoaModel, attributes: ["id", "nome", "whatsapp"] },
-        { model: ModeloMensagemModel, attributes: ["id", "titulo"] },
+        {
+          model: PessoaModel,
+          attributes: ["id", "nome", "whatsapp"],
+          include: [
+            { model: EnderecoModel, attributes: ["bairro", "cidade"], required: false },
+            { model: UsuarioModel, attributes: ["nome"], required: false },
+          ],
+        },
+        { model: ModeloMensagemModel, attributes: ["id", "titulo", "corpo"] },
       ],
       order: [["ordem", "ASC"]],
     });
@@ -280,12 +289,15 @@ router.get("/:id", apenasAdmin, async (req, res, next) => {
               id: item.PessoaModel.id,
               nome: item.PessoaModel.nome,
               whatsapp: item.PessoaModel.whatsapp,
+              bairro: item.PessoaModel.EnderecoModel?.bairro ?? item.PessoaModel.EnderecoModel?.cidade ?? null,
+              nome_coordenador: item.PessoaModel.UsuarioModel?.nome ?? null,
             }
           : null,
         modelo: item.ModeloMensagemModel
           ? {
               id: item.ModeloMensagemModel.id,
               titulo: item.ModeloMensagemModel.titulo,
+              corpo: item.ModeloMensagemModel.corpo ?? null,
             }
           : null,
       })),
