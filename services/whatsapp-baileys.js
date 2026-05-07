@@ -164,6 +164,11 @@ class WhatsappBaileysService {
       return digits;
     }
 
+    // Cadastro local sem DDD (MVP DF): assume DDD 61.
+    if (digits.length === 8 || digits.length === 9) {
+      digits = `61${digits}`;
+    }
+
     // Nacional BR sem DDI
     if (digits.length === 10 || digits.length === 11) {
       return `55${digits}`;
