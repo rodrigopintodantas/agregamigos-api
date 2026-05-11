@@ -78,6 +78,51 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: true,
         field: "falha_em",
       },
+      wa_message_id_envio: {
+        type: DataTypes.STRING(80),
+        allowNull: true,
+        field: "wa_message_id_envio",
+      },
+      resposta_1_texto: {
+        type: DataTypes.TEXT,
+        allowNull: true,
+        field: "resposta_1_texto",
+      },
+      resposta_1_em: {
+        type: DataTypes.DATE,
+        allowNull: true,
+        field: "resposta_1_em",
+      },
+      resposta_1_wa_id: {
+        type: DataTypes.STRING(80),
+        allowNull: true,
+        field: "resposta_1_wa_id",
+      },
+      resposta_1_sentimento: {
+        type: DataTypes.STRING(20),
+        allowNull: true,
+        field: "resposta_1_sentimento",
+      },
+      resposta_2_texto: {
+        type: DataTypes.TEXT,
+        allowNull: true,
+        field: "resposta_2_texto",
+      },
+      resposta_2_em: {
+        type: DataTypes.DATE,
+        allowNull: true,
+        field: "resposta_2_em",
+      },
+      resposta_2_wa_id: {
+        type: DataTypes.STRING(80),
+        allowNull: true,
+        field: "resposta_2_wa_id",
+      },
+      resposta_2_sentimento: {
+        type: DataTypes.STRING(20),
+        allowNull: true,
+        field: "resposta_2_sentimento",
+      },
     },
     {
       freezeTableName: true,

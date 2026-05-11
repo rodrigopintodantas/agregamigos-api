@@ -6,6 +6,7 @@ const {
   fetchLatestBaileysVersion,
   useMultiFileAuthState,
 } = require("@whiskeysockets/baileys");
+const { anexarCapturaRespostas } = require("./whatsapp-captura-respostas-campanha");
 
 class WhatsappBaileysService {
   constructor() {
@@ -50,6 +51,7 @@ class WhatsappBaileysService {
     });
 
     socket.ev.on("creds.update", saveCreds);
+    anexarCapturaRespostas(socket);
 
     socket.ev.on("connection.update", async (update) => {
       const { connection, qr, lastDisconnect } = update;

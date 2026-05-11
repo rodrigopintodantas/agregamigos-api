@@ -40,6 +40,12 @@ module.exports = (sequelize, DataTypes) => {
         defaultValue: false,
         field: "erro_whatsapp",
       },
+      engajamentoWhatsapp: {
+        type: DataTypes.STRING(20),
+        allowNull: false,
+        defaultValue: "sem_resposta",
+        field: "engajamento_whatsapp",
+      },
       idCoordenador: {
         type: DataTypes.INTEGER,
         allowNull: true,

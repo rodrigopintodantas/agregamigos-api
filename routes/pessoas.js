@@ -159,6 +159,7 @@ router.get("/", authBearerLogin(), async (req, res, next) => {
         email: p.email ?? null,
         whatsapp: p.whatsapp ?? null,
         erro_whatsapp: Boolean(p.erroWhatsapp),
+        engajamento_whatsapp: String(p.engajamentoWhatsapp || "sem_resposta"),
         instagram: p.instagram ?? null,
         indicacao: p.indicacao ?? null,
         endereco: p.EnderecoModel

@@ -80,6 +80,11 @@ function onListening() {
   const addr = server.address();
   const bind = typeof addr === "string" ? `pipe ${addr}` : `port ${addr.port}`;
   console.log(`Servidor iniciado em ${bind}`);
+  try {
+    require("../jobs/engajamento-sem-resposta-primeiro-contato").iniciarJobEngajamentoSemResposta();
+  } catch (err) {
+    console.error("[boot] Falha ao iniciar job de engajamento (sem resposta):", err?.message || err);
+  }
 }
 
 startServer();

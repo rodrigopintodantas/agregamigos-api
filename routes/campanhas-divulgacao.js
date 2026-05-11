@@ -250,6 +250,9 @@ router.get("/:id", apenasAdmin, async (req, res, next) => {
     const campanha = await CampanhaDivulgacaoModel.findByPk(id);
     if (!campanha) return res.status(404).json({ message: "Campanha nao encontrada." });
 
+    res.set("Cache-Control", "no-store, no-cache, must-revalidate");
+    res.set("Pragma", "no-cache");
+
     const itens = await CampanhaDestinatarioModel.findAll({
       where: { campanha_id: id },
       include: [
@@ -287,6 +290,13 @@ router.get("/:id", apenasAdmin, async (req, res, next) => {
         falha_codigo: item.falha_codigo ?? null,
         falha_em: item.falha_em ?? null,
         erro_ultimo: item.erro_ultimo,
+        wa_message_id_envio: item.wa_message_id_envio ?? null,
+        resposta_1_texto: item.resposta_1_texto ?? null,
+        resposta_1_em: item.resposta_1_em ?? null,
+        resposta_1_sentimento: item.resposta_1_sentimento ?? null,
+        resposta_2_texto: item.resposta_2_texto ?? null,
+        resposta_2_em: item.resposta_2_em ?? null,
+        resposta_2_sentimento: item.resposta_2_sentimento ?? null,
         pessoa: item.PessoaModel
           ? {
               id: item.PessoaModel.id,
@@ -481,6 +491,15 @@ router.post("/:id/reprocessar-erros", apenasAdmin, async (req, res, next) => {
         falha_entrega: false,
         falha_codigo: null,
         falha_em: null,
+        wa_message_id_envio: null,
+        resposta_1_texto: null,
+        resposta_1_em: null,
+        resposta_1_wa_id: null,
+        resposta_1_sentimento: null,
+        resposta_2_texto: null,
+        resposta_2_em: null,
+        resposta_2_wa_id: null,
+        resposta_2_sentimento: null,
       },
       {
         where: {
