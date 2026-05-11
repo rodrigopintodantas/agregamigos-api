@@ -34,6 +34,12 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.STRING,
         allowNull: true,
       },
+      erroWhatsapp: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+        field: "erro_whatsapp",
+      },
       idCoordenador: {
         type: DataTypes.INTEGER,
         allowNull: true,

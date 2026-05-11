@@ -158,6 +158,7 @@ router.get("/", authBearerLogin(), async (req, res, next) => {
         data_nascimento: p.dataNascimento ?? null,
         email: p.email ?? null,
         whatsapp: p.whatsapp ?? null,
+        erro_whatsapp: Boolean(p.erroWhatsapp),
         instagram: p.instagram ?? null,
         indicacao: p.indicacao ?? null,
         endereco: p.EnderecoModel

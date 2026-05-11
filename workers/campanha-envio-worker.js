@@ -101,6 +101,14 @@ async function atualizarResumoCampanha(campanhaId) {
   );
 }
 
+async function marcarPessoaErroWhatsapp(pessoaId) {
+  if (!pessoaId) return;
+  await PessoaModel.update(
+    { erroWhatsapp: true },
+    { where: { id: Number(pessoaId) } },
+  );
+}
+
 async function processarEnvio(job) {
   const destinatarioId = Number(job?.data?.destinatarioId);
   const campanhaId = Number(job?.data?.campanhaId);
@@ -149,6 +157,7 @@ async function processarEnvio(job) {
       falha_em: new Date(),
       erro_ultimo: "WhatsApp invalido para envio.",
     });
+    await marcarPessoaErroWhatsapp(destinatario?.PessoaModel?.id);
     await atualizarResumoCampanha(campanhaId);
     return;
   }
@@ -197,6 +206,7 @@ async function processarEnvio(job) {
       falha_em: new Date(),
       erro_ultimo: limitarErro(err),
     });
+    await marcarPessoaErroWhatsapp(destinatario?.PessoaModel?.id);
     throw err;
   } finally {
     await atualizarResumoCampanha(campanhaId);
