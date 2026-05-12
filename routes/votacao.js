@@ -186,23 +186,59 @@ router.post("/importar-csv", apenasAdmin, async (req, res, next) => {
       return res.status(400).json({ message: "Nenhuma linha com dados para importar." });
     }
 
+    /** Cada planilha refere-se a uma única zona; várias linhas com o mesmo nr_zona são permitidas. */
+    const zonasDistintasNoArquivo = new Set();
+    for (const row of paraCriar) {
+      if (row.nrZona != null && row.nrZona !== undefined) {
+        zonasDistintasNoArquivo.add(Number(row.nrZona));
+      }
+    }
+
+    if (zonasDistintasNoArquivo.size === 0) {
+      return res.status(400).json({
+        message:
+          "Nenhuma linha com nr_zona informado. Indique a zona nas linhas da planilha (todas devem ser da mesma zona).",
+      });
+    }
+
+    if (zonasDistintasNoArquivo.size > 1) {
+      const lista = [...zonasDistintasNoArquivo].sort((a, b) => a - b);
+      return res.status(400).json({
+        message: `O arquivo contém mais de uma zona (${lista.join(", ")}). Envie uma planilha por zona eleitoral.`,
+      });
+    }
+
+    const zonaArquivo = [...zonasDistintasNoArquivo][0];
+
+    for (const row of paraCriar) {
+      if (row.nrZona == null || row.nrZona === undefined) {
+        row.nrZona = zonaArquivo;
+      }
+    }
+
+    const jaExisteZona = await VotacaoModel.count({
+      where: { nrZona: zonaArquivo },
+    });
+    if (jaExisteZona > 0) {
+      return res.status(409).json({
+        message: `A zona ${zonaArquivo} já possui dados importados. Remova-os na base antes de carregar esta planilha novamente, ou use outra zona.`,
+      });
+    }
+
     const CHUNK = 500;
     await sequelize.transaction(async (transaction) => {
-      await VotacaoModel.destroy({
-        where: {},
-        truncate: true,
-        restartIdentity: true,
-        transaction,
-      });
       for (let i = 0; i < paraCriar.length; i += CHUNK) {
         const slice = paraCriar.slice(i, i + CHUNK);
         await VotacaoModel.bulkCreate(slice, { transaction });
       }
     });
 
+    const inseridos = paraCriar.length;
     return res.status(201).json({
-      message: `${paraCriar.length} registro(s) importado(s). Os dados anteriores foram substituídos.`,
-      total: paraCriar.length,
+      message: `${inseridos} registro(s) da zona ${zonaArquivo} adicionado(s).`,
+      inseridos,
+      ignorados: 0,
+      total: inseridos,
     });
   } catch (err) {
     next(err);
