@@ -17,7 +17,15 @@ app.use(
   }),
 );
 app.use(logger("dev"));
-app.use(express.json({ limit: "5mb" }));
+const jsonParserPadrao = express.json({ limit: "5mb" });
+const jsonParserOuvidoriaImport = express.json({ limit: "200mb" });
+app.use((req, res, next) => {
+  const pathOnly = (req.originalUrl ?? "").split("?")[0];
+  if (req.method === "POST" && pathOnly.endsWith("/ouvidoria/importar-csv")) {
+    return jsonParserOuvidoriaImport(req, res, next);
+  }
+  return jsonParserPadrao(req, res, next);
+});
 app.use(express.urlencoded({ extended: true, limit: "5mb" }));
 app.use(cookieParser());
 
