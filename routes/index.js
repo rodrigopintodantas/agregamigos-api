@@ -19,5 +19,6 @@ router.use("/modelos-mensagem", require("./modelos-mensagem"));
 router.use("/usuarios", require("./usuarios"));
 router.use("/campanhas-divulgacao", require("./campanhas-divulgacao"));
 router.use("/whatsapp", require("./whatsapp"));
+router.use("/votacao", require("./votacao"));
 
 module.exports = router;
