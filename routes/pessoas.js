@@ -277,7 +277,10 @@ router.get("/", authBearerCandidatoObrigatorio(), async (req, res, next) => {
   try {
     const pessoas = await PessoaModel.findAll({
       where: { candidatoId: req.auth.CandidatoId },
-      include: [{ model: EnderecoModel, required: false }],
+      include: [
+        { model: EnderecoModel, required: false },
+        { model: CandidatoModel, attributes: ["nome", "slug"], required: true },
+      ],
       order: [["nome", "ASC"]],
     });
     return res.json(
@@ -291,6 +294,8 @@ router.get("/", authBearerCandidatoObrigatorio(), async (req, res, next) => {
         engajamento_whatsapp: String(p.engajamentoWhatsapp || "sem_resposta"),
         instagram: p.instagram ?? null,
         indicacao: p.indicacao ?? null,
+        candidato_nome: p.CandidatoModel?.nome ?? null,
+        candidato_slug: p.CandidatoModel?.slug ?? null,
         endereco: p.EnderecoModel
           ? {
               cep: p.EnderecoModel.cep ?? null,

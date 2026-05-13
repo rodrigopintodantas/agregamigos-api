@@ -21,6 +21,7 @@ router.use("/campanhas-divulgacao", require("./campanhas-divulgacao"));
 router.use("/whatsapp", require("./whatsapp"));
 router.use("/votacao", require("./votacao"));
 router.use("/ouvidoria", require("./ouvidoria"));
+router.use("/candidatos", require("./candidatos"));
 router.use("/zonas-eleitorais", require("./zonas-eleitorais"));
 
 module.exports = router;
