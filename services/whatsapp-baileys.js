@@ -38,6 +38,17 @@ function normalizarNumeroBrasil(numero) {
 }
 
 /**
+ * Dígitos do telefone no user do JID (ignora sufixo :agente).
+ * Deve bater com o que chega em mensagens recebidas do mesmo contato.
+ */
+function extrairDigitosUsuarioJidWhatsapp(jid) {
+  const user = String(jid || "").split("@")[0] || "";
+  if (!user) return "";
+  const semAgente = user.includes(":") ? String(user.split(":")[0] || "") : user;
+  return semAgente.replace(/\D/g, "");
+}
+
+/**
  * Move credenciais antigas (arquivos soltos em `.baileys_auth/`) para `.baileys_auth/candidato_1/`.
  */
 function resolverPastaAuthBaileys(candidatoId) {
@@ -85,6 +96,33 @@ function resolverPastaAuthBaileys(candidatoId) {
 
   fs.mkdirSync(dest, { recursive: true });
   return dest;
+}
+
+/**
+ * Remove arquivos de sessão salvos localmente para forçar pareamento com um novo número.
+ */
+function limparArquivosAuthCandidato(candidatoId) {
+  let folder;
+  try {
+    folder = resolverPastaAuthBaileys(candidatoId);
+  } catch {
+    return;
+  }
+  if (!fs.existsSync(folder)) return;
+  let entries = [];
+  try {
+    entries = fs.readdirSync(folder);
+  } catch {
+    return;
+  }
+  for (const name of entries) {
+    const p = path.join(folder, name);
+    try {
+      fs.rmSync(p, { recursive: true, force: true });
+    } catch {
+      /* ignora arquivo bloqueado ou já removido */
+    }
+  }
 }
 
 class WhatsappPorCandidato {
@@ -204,6 +242,15 @@ class WhatsappPorCandidato {
     return this.getStatus();
   }
 
+  /**
+   * Encerra a sessão atual, apaga credenciais locais e abre fluxo de QR para um novo telefone.
+   */
+  async trocarTelefone(nomePerfil = "Canal principal") {
+    await this.disconnect();
+    limparArquivosAuthCandidato(this.candidatoId);
+    return this.connect(nomePerfil);
+  }
+
   async sendText(numero, mensagem) {
     if (!this.sock || !this.estado.conectado) {
       throw new Error("Canal WhatsApp nao conectado.");
@@ -216,6 +263,9 @@ class WhatsappPorCandidato {
       throw new Error("Numero nao encontrado no WhatsApp.");
     }
     const jidResolvido = String(existe[0]?.jid || jidDigitado);
+    const digitosNoJid = extrairDigitosUsuarioJidWhatsapp(jidResolvido);
+    const whatsappMatch =
+      digitosNoJid && digitosNoJid.length >= 11 ? digitosNoJid : digits;
 
     const texto = String(mensagem || "").trim();
     if (!texto) {
@@ -228,6 +278,7 @@ class WhatsappPorCandidato {
     }
     return {
       numeroNormalizado: digits,
+      whatsappMatch,
       jidDigitado,
       jidResolvido,
       messageId: resultado.key.id,
@@ -271,12 +322,20 @@ class WhatsappBaileysManager {
     return this.getOrCreate(candidatoId).disconnect();
   }
 
+  async trocarTelefone(candidatoId, nomePerfil) {
+    return this.getOrCreate(candidatoId).trocarTelefone(nomePerfil);
+  }
+
   async sendText(candidatoId, numero, mensagem) {
     return this.getOrCreate(candidatoId).sendText(numero, mensagem);
   }
 
   normalizarNumeroBrasil(numero) {
     return normalizarNumeroBrasil(numero);
+  }
+
+  extrairDigitosUsuarioJidWhatsapp(jid) {
+    return extrairDigitosUsuarioJidWhatsapp(jid);
   }
 }
 

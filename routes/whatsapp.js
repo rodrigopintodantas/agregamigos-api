@@ -47,6 +47,26 @@ router.post("/desconectar", ...apenasAdmin, async (req, res, next) => {
   }
 });
 
+router.post("/trocar-telefone", ...apenasAdmin, async (req, res, next) => {
+  const nomePerfil = String(req.body?.nomePerfil || "Canal principal").trim();
+
+  try {
+    const atual = await whatsappService.trocarTelefone(
+      req.auth.CandidatoId,
+      nomePerfil || "Canal principal",
+    );
+    return res.status(200).json({
+      ...atual,
+      message:
+        atual.status === "aguardando_qr"
+          ? "Sessao encerrada. Escaneie o QR Code com o novo telefone."
+          : "Troca de telefone iniciada. Siga as instrucoes na tela para concluir.",
+    });
+  } catch (err) {
+    return next(err);
+  }
+});
+
 router.post("/send-interno", validarChaveInterna, async (req, res, next) => {
   try {
     const numero = String(req.body?.numero || "");
@@ -59,6 +79,7 @@ router.post("/send-interno", validarChaveInterna, async (req, res, next) => {
     return res.status(200).json({
       message: "Mensagem enviada.",
       numero_normalizado: envio?.numeroNormalizado || null,
+      whatsapp_match: envio?.whatsappMatch || null,
       jid_digitado: envio?.jidDigitado || null,
       jid_resolvido: envio?.jidResolvido || null,
       message_id: envio?.messageId || null,

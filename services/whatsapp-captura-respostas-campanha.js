@@ -20,9 +20,15 @@ function obterJanelaMs() {
   return MS_48H;
 }
 
+/**
+ * Extrai só o número (E.164 sem símbolos) do user do JID.
+ * O WhatsApp usa `5511999999999:XX@s.whatsapp.net` (agente/dispositivo); se juntarmos tudo com
+ * replace(/\D/g), o sufixo vira dígitos errados e não bate com `campanha_destinatario.whatsapp`.
+ */
 function jidParaDigitos(jid) {
   const user = String(jid || "").split("@")[0] || "";
-  return user.replace(/\D/g, "");
+  const semAgente = user.includes(":") ? String(user.split(":")[0] || "") : user;
+  return semAgente.replace(/\D/g, "");
 }
 
 /** IDs do WA podem vir como string ou Buffer (protobuf). */
@@ -124,6 +130,16 @@ function extrairStanzaIdCitado(message) {
   const ctx = extrairContextInfo(message);
   const id = ctx?.stanzaId;
   return id ? waIdParaString(id) : null;
+}
+
+/** Áudio, imagem etc. sem legenda ainda deve poder ser ligado à campanha (match por janela). */
+function temMidiaAttribuivel(message) {
+  const m = desembrulharMessage(message);
+  if (!m || typeof m !== "object") return false;
+  if (m.reactionMessage) return false;
+  return Boolean(
+    m.imageMessage || m.videoMessage || m.documentMessage || m.audioMessage || m.stickerMessage,
+  );
 }
 
 function timestampRecebimento(msg) {
@@ -270,11 +286,12 @@ async function processarMensagemInbound(msg, upsertType, candidatoId) {
     if (!variantes.length) return;
 
     const texto = extrairTextoInbound(msg.message);
+    const textoTrim = String(texto || "").trim();
     const waId = waIdParaString(msg.key.id);
     const recvAt = timestampRecebimento(msg);
     const quotedId = extrairStanzaIdCitado(msg.message);
 
-    if (!String(texto || "").trim() && !quotedId) return;
+    if (!textoTrim && !quotedId && !temMidiaAttribuivel(msg.message)) return;
 
     debugCaptura("inbound", {
       upsertType,

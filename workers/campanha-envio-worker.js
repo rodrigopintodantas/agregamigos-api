@@ -84,6 +84,7 @@ async function enviarViaApi(numero, mensagem, candidatoId) {
     messageId: String(body.message_id),
     jid: String(body.jid_resolvido),
     numeroNormalizado: String(body.numero_normalizado || ""),
+    whatsappMatch: String(body.whatsapp_match || ""),
   };
 }
 
@@ -186,6 +187,9 @@ async function processarEnvio(job) {
   const transaction = await sequelize.transaction();
   try {
     const envio = await enviarViaApi(numero, mensagem, campanha.candidatoId);
+    const whatsappArmazenar = String(envio.whatsappMatch || envio.numeroNormalizado || numero || "")
+      .replace(/\D/g, "")
+      .slice(0, 20);
     await destinatario.update(
       {
         status: "enviado",
@@ -195,6 +199,7 @@ async function processarEnvio(job) {
         falha_codigo: null,
         falha_em: null,
         wa_message_id_envio: envio.messageId,
+        whatsapp: whatsappArmazenar || String(destinatario.whatsapp || "").replace(/\D/g, "").slice(0, 20),
         resposta_1_texto: null,
         resposta_1_em: null,
         resposta_1_wa_id: null,
