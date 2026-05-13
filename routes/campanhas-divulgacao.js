@@ -8,7 +8,7 @@ const {
   UsuarioModel,
   ModeloMensagemModel,
 } = require("../models");
-const { authorize } = require("../auth/authorize");
+const { authorize, authBearerCandidatoObrigatorio } = require("../auth/authorize");
 const whatsappService = require("../services/whatsapp-baileys");
 const {
   enfileirarDestinatarios,
@@ -17,7 +17,7 @@ const {
 } = require("../queues/campanha-envio-queue");
 
 const router = express.Router();
-const apenasAdmin = authorize(["Administrador"]);
+const apenasAdmin = [authBearerCandidatoObrigatorio(), authorize(["Administrador"])];
 
 function limparNumeros(value) {
   return value != null ? String(value).replace(/\D/g, "") : "";
@@ -172,9 +172,10 @@ async function prepararEEnfileirarCampanha(campanhaId) {
   return { campanha, totalEnfileirado: pendentes.length };
 }
 
-router.get("/", apenasAdmin, async (req, res, next) => {
+router.get("/", ...apenasAdmin, async (req, res, next) => {
   try {
     const campanhas = await CampanhaDivulgacaoModel.findAll({
+      where: { candidatoId: req.auth.CandidatoId },
       order: [
         ["createdAt", "DESC"],
         ["id", "DESC"],
@@ -240,16 +241,17 @@ router.get("/", apenasAdmin, async (req, res, next) => {
   }
 });
 
-router.get("/:id", apenasAdmin, async (req, res, next) => {
+router.get("/:id", ...apenasAdmin, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) {
       return res.status(400).json({ message: "ID invalido." });
     }
 
-    const campanha = await CampanhaDivulgacaoModel.findByPk(id);
+    const campanha = await CampanhaDivulgacaoModel.findOne({
+      where: { id, candidatoId: req.auth.CandidatoId },
+    });
     if (!campanha) return res.status(404).json({ message: "Campanha nao encontrada." });
-
     res.set("Cache-Control", "no-store, no-cache, must-revalidate");
     res.set("Pragma", "no-cache");
 
@@ -320,7 +322,7 @@ router.get("/:id", apenasAdmin, async (req, res, next) => {
   }
 });
 
-router.post("/", apenasAdmin, async (req, res, next) => {
+router.post("/", ...apenasAdmin, async (req, res, next) => {
   try {
     const nome = req.body?.nome != null ? String(req.body.nome).trim() : "";
     const pessoaIds = Array.isArray(req.body?.pessoa_ids) ? req.body.pessoa_ids.map(Number) : [];
@@ -343,7 +345,7 @@ router.post("/", apenasAdmin, async (req, res, next) => {
     }
 
     const pessoas = await PessoaModel.findAll({
-      where: { id: pessoaIdsValidos },
+      where: { id: pessoaIdsValidos, candidatoId: req.auth.CandidatoId },
       attributes: ["id", "nome", "whatsapp"],
       order: [["nome", "ASC"]],
     });
@@ -360,7 +362,7 @@ router.post("/", apenasAdmin, async (req, res, next) => {
     }
 
     const modelos = await ModeloMensagemModel.findAll({
-      where: { id: modeloIdsValidos },
+      where: { id: modeloIdsValidos, candidatoId: req.auth.CandidatoId },
       attributes: ["id", "titulo"],
       order: [["titulo", "ASC"]],
     });
@@ -377,6 +379,7 @@ router.post("/", apenasAdmin, async (req, res, next) => {
           total_enviados: 0,
           mensagens_por_turno: mensagensPorTurno,
           usuario_id: req.auth?.UsuarioId ?? null,
+          candidatoId: req.auth.CandidatoId,
         },
         { transaction },
       );
@@ -412,14 +415,16 @@ router.post("/", apenasAdmin, async (req, res, next) => {
   }
 });
 
-router.delete("/:id", apenasAdmin, async (req, res, next) => {
+router.delete("/:id", ...apenasAdmin, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) {
       return res.status(400).json({ message: "ID invalido." });
     }
 
-    const campanha = await CampanhaDivulgacaoModel.findByPk(id);
+    const campanha = await CampanhaDivulgacaoModel.findOne({
+      where: { id, candidatoId: req.auth.CandidatoId },
+    });
     if (!campanha) {
       return res.status(404).json({ message: "Campanha nao encontrada." });
     }
@@ -437,14 +442,16 @@ router.delete("/:id", apenasAdmin, async (req, res, next) => {
   }
 });
 
-router.post("/:id/iniciar", apenasAdmin, async (req, res, next) => {
+router.post("/:id/iniciar", ...apenasAdmin, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) {
       return res.status(400).json({ message: "ID invalido." });
     }
 
-    const campanha = await CampanhaDivulgacaoModel.findByPk(id);
+    const campanha = await CampanhaDivulgacaoModel.findOne({
+      where: { id, candidatoId: req.auth.CandidatoId },
+    });
     if (!campanha) {
       return res.status(404).json({ message: "Campanha nao encontrada." });
     }
@@ -452,7 +459,7 @@ router.post("/:id/iniciar", apenasAdmin, async (req, res, next) => {
     if (String(campanha.status) === "cancelada") {
       return res.status(400).json({ message: "Campanha cancelada nao pode ser iniciada." });
     }
-    const wpp = whatsappService.getStatus();
+    const wpp = whatsappService.getStatus(req.auth.CandidatoId);
     if (!wpp.conectado) {
       return res.status(400).json({
         message: "Canal WhatsApp desconectado. Conecte o Baileys antes de iniciar a campanha.",
@@ -472,14 +479,16 @@ router.post("/:id/iniciar", apenasAdmin, async (req, res, next) => {
   }
 });
 
-router.post("/:id/reprocessar-erros", apenasAdmin, async (req, res, next) => {
+router.post("/:id/reprocessar-erros", ...apenasAdmin, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) {
       return res.status(400).json({ message: "ID invalido." });
     }
 
-    const campanha = await CampanhaDivulgacaoModel.findByPk(id);
+    const campanha = await CampanhaDivulgacaoModel.findOne({
+      where: { id, candidatoId: req.auth.CandidatoId },
+    });
     if (!campanha) {
       return res.status(404).json({ message: "Campanha nao encontrada." });
     }
@@ -527,14 +536,16 @@ router.post("/:id/reprocessar-erros", apenasAdmin, async (req, res, next) => {
   }
 });
 
-router.post("/:id/cancelar", apenasAdmin, async (req, res, next) => {
+router.post("/:id/cancelar", ...apenasAdmin, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) {
       return res.status(400).json({ message: "ID invalido." });
     }
 
-    const campanha = await CampanhaDivulgacaoModel.findByPk(id);
+    const campanha = await CampanhaDivulgacaoModel.findOne({
+      where: { id, candidatoId: req.auth.CandidatoId },
+    });
     if (!campanha) {
       return res.status(404).json({ message: "Campanha nao encontrada." });
     }

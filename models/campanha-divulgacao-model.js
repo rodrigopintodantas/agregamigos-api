@@ -39,6 +39,11 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: true,
         field: "usuario_id",
       },
+      candidatoId: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        field: "candidato_id",
+      },
     },
     {
       freezeTableName: true,
@@ -56,6 +61,11 @@ module.exports = (sequelize, DataTypes) => {
     CampanhaDivulgacaoModel.belongsTo(models.UsuarioModel, {
       foreignKey: { name: "usuario_id", field: "usuario_id" },
       onDelete: "SET NULL",
+      onUpdate: "CASCADE",
+    });
+    CampanhaDivulgacaoModel.belongsTo(models.CandidatoModel, {
+      foreignKey: { name: "candidatoId", field: "candidato_id" },
+      onDelete: "RESTRICT",
       onUpdate: "CASCADE",
     });
   };

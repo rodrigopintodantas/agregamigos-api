@@ -1,12 +1,13 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
 const { Op, fn, col, where } = require("sequelize");
-const { UsuarioModel, PapelModel } = require("../models");
-const { authorize } = require("../auth/authorize");
+const { UsuarioModel, PapelModel, UsuarioCandidatoModel } = require("../models");
+const { authorize, authBearerCandidatoObrigatorio } = require("../auth/authorize");
 
 const router = express.Router();
+const apenasAdmin = [authBearerCandidatoObrigatorio(), authorize(["Administrador"])];
 
-router.get("/papeis", authorize(["Administrador"]), async (req, res, next) => {
+router.get("/papeis", ...apenasAdmin, async (req, res, next) => {
   try {
     const papeis = await PapelModel.findAll({
       attributes: ["id", "nome", "dashboard"],
@@ -18,7 +19,7 @@ router.get("/papeis", authorize(["Administrador"]), async (req, res, next) => {
   }
 });
 
-router.post("/", authorize(["Administrador"]), async (req, res, next) => {
+router.post("/", ...apenasAdmin, async (req, res, next) => {
   try {
     const nome = req.body?.nome != null ? String(req.body.nome).trim() : "";
     const login = req.body?.login != null ? String(req.body.login).trim() : "";
@@ -76,6 +77,11 @@ router.post("/", authorize(["Administrador"]), async (req, res, next) => {
       dataNascimento: null,
       senha_hash,
       PapelModelId: papel.id,
+    });
+
+    await UsuarioCandidatoModel.create({
+      usuario_id: criado.id,
+      candidato_id: req.auth.CandidatoId,
     });
 
     return res.status(201).json({

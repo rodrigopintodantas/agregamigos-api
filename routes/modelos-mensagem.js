@@ -1,9 +1,9 @@
 const express = require("express");
 const { ModeloMensagemModel } = require("../models");
-const { authorize } = require("../auth/authorize");
+const { authorize, authBearerCandidatoObrigatorio } = require("../auth/authorize");
 
 const router = express.Router();
-const apenasAdmin = authorize(["Administrador"]);
+const apenasAdmin = [authBearerCandidatoObrigatorio(), authorize(["Administrador"])];
 
 function payloadFromBody(body) {
   const titulo = body?.titulo != null ? String(body.titulo).trim() : "";
@@ -21,9 +21,10 @@ function mapRow(m) {
   };
 }
 
-router.get("/", apenasAdmin, async (req, res, next) => {
+router.get("/", ...apenasAdmin, async (req, res, next) => {
   try {
     const rows = await ModeloMensagemModel.findAll({
+      where: { candidatoId: req.auth.CandidatoId },
       order: [
         ["updatedAt", "DESC"],
         ["id", "DESC"],
@@ -35,7 +36,7 @@ router.get("/", apenasAdmin, async (req, res, next) => {
   }
 });
 
-router.post("/", apenasAdmin, async (req, res, next) => {
+router.post("/", ...apenasAdmin, async (req, res, next) => {
   try {
     const { titulo, corpo } = payloadFromBody(req.body);
     if (!titulo || !corpo) {
@@ -45,6 +46,7 @@ router.post("/", apenasAdmin, async (req, res, next) => {
       titulo,
       corpo,
       usuario_id: req.auth?.UsuarioId ?? null,
+      candidatoId: req.auth.CandidatoId,
     });
     res.status(201).json(mapRow(created));
   } catch (err) {
@@ -52,7 +54,7 @@ router.post("/", apenasAdmin, async (req, res, next) => {
   }
 });
 
-router.put("/:id", apenasAdmin, async (req, res, next) => {
+router.put("/:id", ...apenasAdmin, async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (Number.isNaN(id)) {
@@ -62,7 +64,9 @@ router.put("/:id", apenasAdmin, async (req, res, next) => {
     if (!titulo || !corpo) {
       return res.status(400).json({ message: "Informe titulo e corpo do modelo." });
     }
-    const row = await ModeloMensagemModel.findByPk(id);
+    const row = await ModeloMensagemModel.findOne({
+      where: { id, candidatoId: req.auth.CandidatoId },
+    });
     if (!row) {
       return res.status(404).json({ message: "Modelo nao encontrado." });
     }
@@ -74,13 +78,15 @@ router.put("/:id", apenasAdmin, async (req, res, next) => {
   }
 });
 
-router.delete("/:id", apenasAdmin, async (req, res, next) => {
+router.delete("/:id", ...apenasAdmin, async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (Number.isNaN(id)) {
       return res.status(400).json({ message: "ID invalido." });
     }
-    const row = await ModeloMensagemModel.findByPk(id);
+    const row = await ModeloMensagemModel.findOne({
+      where: { id, candidatoId: req.auth.CandidatoId },
+    });
     if (!row) {
       return res.status(404).json({ message: "Modelo nao encontrado." });
     }

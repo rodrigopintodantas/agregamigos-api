@@ -1,7 +1,7 @@
 "use strict";
 
 const { Op } = require("sequelize");
-const { sequelize, CampanhaDestinatarioModel } = require("../models");
+const { sequelize, CampanhaDestinatarioModel, CampanhaDivulgacaoModel } = require("../models");
 const { classificarSentimento } = require("./campanha-resposta-sentimento");
 const { atualizarEngajamentoPessoaDeRespostas } = require("./pessoa-engajamento-whatsapp");
 
@@ -138,7 +138,7 @@ function limparTexto(texto) {
     .slice(0, TEXTO_MAX);
 }
 
-async function buscarDestinatarioPorCitacao(quotedId, recvAt) {
+async function buscarDestinatarioPorCitacao(quotedId, recvAt, candidatoId) {
   const qid = waIdParaString(quotedId);
   if (!qid) return null;
   const janelaMs = obterJanelaMs();
@@ -149,27 +149,43 @@ async function buscarDestinatarioPorCitacao(quotedId, recvAt) {
       wa_message_id_envio: qid,
       enviado_em: { [Op.lte]: recvAt, [Op.gte]: limiteInferior },
     },
+    include: [
+      {
+        model: CampanhaDivulgacaoModel,
+        attributes: [],
+        required: true,
+        where: { candidatoId },
+      },
+    ],
     order: [["enviado_em", "DESC"]],
   });
 }
 
-async function buscarDestinatarioPorJanela(variantesDigitos, recvAt) {
+async function buscarDestinatarioPorJanela(variantesDigitos, recvAt, candidatoId) {
   const janelaMs = obterJanelaMs();
   const limiteInferior = new Date(recvAt.getTime() - janelaMs);
   const lista = Array.isArray(variantesDigitos) ? variantesDigitos.filter(Boolean) : [];
   if (!lista.length) return null;
 
-  const candidatos = await CampanhaDestinatarioModel.findAll({
+  const destinatarios = await CampanhaDestinatarioModel.findAll({
     where: {
       status: "enviado",
       whatsapp: { [Op.in]: lista },
       enviado_em: { [Op.lte]: recvAt, [Op.gte]: limiteInferior },
     },
+    include: [
+      {
+        model: CampanhaDivulgacaoModel,
+        attributes: [],
+        required: true,
+        where: { candidatoId },
+      },
+    ],
     order: [["enviado_em", "DESC"]],
     limit: 24,
   });
 
-  for (const row of candidatos) {
+  for (const row of destinatarios) {
     const r1 = row.resposta_1_wa_id;
     const r2 = row.resposta_2_wa_id;
     if (!r1 || !r2) return row;
@@ -242,7 +258,7 @@ async function gravarRespostaSeAplicavel(destinatario, waMsgId, texto, recvAt) {
   });
 }
 
-async function processarMensagemInbound(msg, upsertType) {
+async function processarMensagemInbound(msg, upsertType, candidatoId) {
   try {
     if (!msg?.key) return;
     if (msg.key.fromMe) return;
@@ -271,10 +287,10 @@ async function processarMensagemInbound(msg, upsertType) {
 
     let destinatario = null;
     if (quotedId) {
-      destinatario = await buscarDestinatarioPorCitacao(quotedId, recvAt);
+      destinatario = await buscarDestinatarioPorCitacao(quotedId, recvAt, candidatoId);
     }
     if (!destinatario) {
-      destinatario = await buscarDestinatarioPorJanela(variantes, recvAt);
+      destinatario = await buscarDestinatarioPorJanela(variantes, recvAt, candidatoId);
     }
     if (!destinatario) {
       debugCaptura("sem destinatario", { variantes, quotedId });
@@ -287,14 +303,19 @@ async function processarMensagemInbound(msg, upsertType) {
   }
 }
 
-function anexarCapturaRespostas(socket) {
+function anexarCapturaRespostas(socket, candidatoId) {
   if (!socket?.ev) return;
+  const cid = Number(candidatoId);
+  if (!Number.isInteger(cid) || cid <= 0) {
+    console.error("[captura-respostas] candidatoId invalido; captura nao anexada.");
+    return;
+  }
 
   socket.ev.on("messages.upsert", async ({ messages, type }) => {
     // `notify` = mensagem em tempo real; `append` = fila/offline/histórico — respostas do usuário costumam chegar nas duas.
     if ((type !== "notify" && type !== "append") || !Array.isArray(messages)) return;
     for (const msg of messages) {
-      await processarMensagemInbound(msg, type);
+      await processarMensagemInbound(msg, type, cid);
     }
   });
 }

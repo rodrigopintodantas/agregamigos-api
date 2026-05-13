@@ -65,6 +65,11 @@ module.exports = (sequelize, DataTypes) => {
       onDelete: "SET NULL",
       onUpdate: "CASCADE",
     });
+    UsuarioModel.belongsToMany(models.CandidatoModel, {
+      through: models.UsuarioCandidatoModel,
+      foreignKey: "usuario_id",
+      otherKey: "candidato_id",
+    });
   };
 
   return UsuarioModel;

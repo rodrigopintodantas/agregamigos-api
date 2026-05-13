@@ -1,9 +1,14 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
 const { col, fn, where } = require("sequelize");
-const { authorizeSemPerfilSelecionado, authBearerLogin, getPapeisPorUsuario } = require("../auth/authorize");
+const {
+  authorizeSemPerfilSelecionado,
+  authBearerLogin,
+  getPapeisPorUsuario,
+  listarCandidatosDoUsuario,
+} = require("../auth/authorize");
 const { signAccessToken } = require("../auth/jwt");
-const { UsuarioModel } = require("../models");
+const { UsuarioModel, CandidatoModel, UsuarioCandidatoModel } = require("../models");
 const perfil = require("../auth/perfil");
 
 const router = express.Router();
@@ -47,6 +52,7 @@ router.post("/login", async (req, res, next) => {
     }
 
     const token = signAccessToken(usuario);
+    const candidatos = await listarCandidatosDoUsuario(usuario.id);
     return res.json({
       token,
       usuario: {
@@ -58,6 +64,7 @@ router.post("/login", async (req, res, next) => {
         dataNascimento: usuario.dataNascimento,
       },
       papeis: up,
+      candidatos,
     });
   } catch (err) {
     next(err);
@@ -66,6 +73,53 @@ router.post("/login", async (req, res, next) => {
 
 router.get("/", authorizeSemPerfilSelecionado());
 router.get("/perfil", authBearerLogin(), perfil);
+
+router.post("/candidato", authBearerLogin(), async (req, res, next) => {
+  try {
+    const slugRaw = req.body?.slug != null ? String(req.body.slug).trim().toLowerCase() : "";
+    if (!slugRaw || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slugRaw)) {
+      return res.status(400).json({ message: "Informe um slug de candidato valido." });
+    }
+
+    const candidato = await CandidatoModel.findOne({
+      where: { slug: slugRaw },
+      attributes: ["id", "nome", "slug"],
+    });
+    if (!candidato) {
+      return res.status(404).json({ message: "Candidato nao encontrado." });
+    }
+
+    const vinculo = await UsuarioCandidatoModel.findOne({
+      where: { usuario_id: req.auth.UsuarioId, candidato_id: candidato.id },
+    });
+    if (!vinculo) {
+      return res.status(403).json({ message: "Voce nao tem acesso a este candidato." });
+    }
+
+    const usuarioToken = await UsuarioModel.unscoped().findByPk(req.auth.UsuarioId, {
+      attributes: ["id", "login"],
+    });
+    if (!usuarioToken) {
+      return res.status(401).json({ message: "Usuario nao encontrado." });
+    }
+
+    const token = signAccessToken(usuarioToken, {
+      id: candidato.id,
+      slug: candidato.slug,
+    });
+
+    return res.json({
+      token,
+      candidato: {
+        id: candidato.id,
+        nome: candidato.nome,
+        slug: candidato.slug,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
 
 router.post("/alterar-senha", authBearerLogin(), async (req, res, next) => {
   try {

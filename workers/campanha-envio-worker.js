@@ -42,16 +42,20 @@ function aplicarVariaveisMensagem(template, pessoa) {
     .replace(/XXXX/g, nomeCompleto);
 }
 
-async function enviarViaApi(numero, mensagem) {
+async function enviarViaApi(numero, mensagem, candidatoId) {
   const apiUrl = process.env.INTERNAL_API_URL || "http://127.0.0.1:3000/api";
   const internalApiKey = process.env.INTERNAL_API_KEY || "dev-local-key";
+  const cid = Number(candidatoId);
+  if (!Number.isInteger(cid) || cid <= 0) {
+    throw new Error("candidato_id invalido para envio WhatsApp.");
+  }
   const response = await fetch(`${apiUrl}/whatsapp/send-interno`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "x-internal-api-key": internalApiKey,
     },
-    body: JSON.stringify({ numero, mensagem }),
+    body: JSON.stringify({ numero, mensagem, candidato_id: cid }),
   });
   if (!response.ok) {
     let reason = `Falha HTTP ${response.status}`;
@@ -132,7 +136,7 @@ async function processarEnvio(job) {
   if (String(destinatario.status) !== "pendente") return;
 
   const campanha = await CampanhaDivulgacaoModel.findByPk(campanhaId, {
-    attributes: ["id", "status"],
+    attributes: ["id", "status", "candidatoId"],
   });
   if (!campanha) return;
   if (String(campanha.status) === "cancelada") {
@@ -181,7 +185,7 @@ async function processarEnvio(job) {
 
   const transaction = await sequelize.transaction();
   try {
-    const envio = await enviarViaApi(numero, mensagem);
+    const envio = await enviarViaApi(numero, mensagem, campanha.candidatoId);
     await destinatario.update(
       {
         status: "enviado",

@@ -1,4 +1,4 @@
-const { PapelModel, UsuarioModel } = require("../models");
+const { PapelModel, UsuarioModel, UsuarioCandidatoModel, CandidatoModel } = require("../models");
 const { verifyAccessToken } = require("./jwt");
 
 function getBearerToken(req) {
@@ -14,7 +14,7 @@ function temPermissao(userRoles = [], functionRoles = []) {
   return userRoles.some((element) => functionRoles.indexOf(element) > -1);
 }
 
-async function getUsuarioDoToken(req, res) {
+async function attachBearerAuth(req, res) {
   const token = getBearerToken(req);
   if (!token) {
     res.status(401).json({ message: "Cabecalho Authorization nao informado." });
@@ -36,6 +36,21 @@ async function getUsuarioDoToken(req, res) {
     res.status(401).json({ message: "Usuario nao encontrado." });
     return null;
   }
+
+  const rawCid = decoded.candidato_id;
+  const candidatoId =
+    rawCid != null && rawCid !== "" ? Number(rawCid) : null;
+  const candidatoSlugRaw =
+    decoded.candidato_slug != null ? String(decoded.candidato_slug).trim().toLowerCase() : null;
+
+  req.auth = {
+    preferred_username: usuario.login,
+    UsuarioId: usuario.id,
+    CandidatoId:
+      Number.isInteger(candidatoId) && candidatoId > 0 ? candidatoId : null,
+    CandidatoSlug: candidatoSlugRaw && candidatoSlugRaw.length > 0 ? candidatoSlugRaw : null,
+  };
+
   return usuario;
 }
 
@@ -44,7 +59,7 @@ function authorize(functionRoles = []) {
 
   return async (req, res, next) => {
     try {
-      const usuario = await getUsuarioDoToken(req, res);
+      const usuario = await attachBearerAuth(req, res);
       if (!usuario) return;
 
       const usuarioComPapel = await UsuarioModel.findByPk(usuario.id, {
@@ -57,7 +72,6 @@ function authorize(functionRoles = []) {
         return res.status(401).json({ message: "Usuario sem perfil." });
       }
 
-      req.auth = { preferred_username: usuario.login, UsuarioId: usuario.id };
       next();
     } catch (error) {
       console.error("Erro no middleware authorize:", error);
@@ -69,12 +83,50 @@ function authorize(functionRoles = []) {
 function authBearerLogin() {
   return async (req, res, next) => {
     try {
-      const usuario = await getUsuarioDoToken(req, res);
+      const usuario = await attachBearerAuth(req, res);
       if (!usuario) return;
-      req.auth = { preferred_username: usuario.login, UsuarioId: usuario.id };
       next();
     } catch (error) {
       console.error("Erro no middleware authBearerLogin:", error);
+      return res.status(401).json({ message: "Nao autorizado." });
+    }
+  };
+}
+
+function authBearerCandidatoObrigatorio() {
+  return async (req, res, next) => {
+    try {
+      const usuario = await attachBearerAuth(req, res);
+      if (!usuario) return;
+
+      if (!req.auth.CandidatoId) {
+        return res.status(403).json({ message: "Selecione um candidato para continuar." });
+      }
+
+      const vinculo = await UsuarioCandidatoModel.findOne({
+        where: { usuario_id: usuario.id, candidato_id: req.auth.CandidatoId },
+      });
+      if (!vinculo) {
+        return res.status(403).json({ message: "Sem acesso a este candidato." });
+      }
+
+      const cand = await CandidatoModel.findByPk(req.auth.CandidatoId, {
+        attributes: ["id", "slug", "nome"],
+      });
+      if (!cand || !cand.slug) {
+        return res.status(403).json({ message: "Candidato invalido." });
+      }
+
+      if (req.auth.CandidatoSlug && cand.slug !== req.auth.CandidatoSlug) {
+        return res.status(403).json({ message: "Contexto de candidato inconsistente no token." });
+      }
+      if (!req.auth.CandidatoSlug) {
+        req.auth.CandidatoSlug = cand.slug;
+      }
+
+      next();
+    } catch (error) {
+      console.error("Erro no middleware authBearerCandidatoObrigatorio:", error);
       return res.status(401).json({ message: "Nao autorizado." });
     }
   };
@@ -96,16 +148,40 @@ async function getPapeisPorUsuario(usuario) {
   ];
 }
 
+async function listarCandidatosDoUsuario(usuarioId) {
+  const rows = await UsuarioCandidatoModel.findAll({
+    where: { usuario_id: usuarioId },
+    include: [
+      {
+        model: CandidatoModel,
+        attributes: ["id", "nome", "slug"],
+        required: true,
+      },
+    ],
+  });
+  const candidatos = rows
+    .map((r) => r.CandidatoModel)
+    .filter(Boolean)
+    .sort((a, b) => String(a.nome).localeCompare(b.nome, "pt"));
+  return candidatos.map((c) => ({
+    id: c.id,
+    nome: c.nome,
+    slug: c.slug,
+  }));
+}
+
 function authorizeSemPerfilSelecionado() {
   return async (req, res) => {
     try {
-      const usuario = await getUsuarioDoToken(req, res);
+      const usuario = await attachBearerAuth(req, res);
       if (!usuario) return;
 
       const papeis = await getPapeisPorUsuario(usuario);
       if (!papeis || papeis.length === 0) {
         return res.status(400).json({ message: "O usuario nao possui papel no sistema." });
       }
+
+      const candidatos = await listarCandidatosDoUsuario(usuario.id);
 
       return res.status(200).send({
         usuario: {
@@ -117,6 +193,7 @@ function authorizeSemPerfilSelecionado() {
           dataNascimento: usuario.dataNascimento,
         },
         papeis,
+        candidatos,
       });
     } catch (error) {
       console.error("Erro no middleware authorizeSemPerfilSelecionado:", error);
@@ -129,5 +206,8 @@ module.exports = {
   authorizeSemPerfilSelecionado,
   authorize,
   authBearerLogin,
+  authBearerCandidatoObrigatorio,
   getPapeisPorUsuario,
+  listarCandidatosDoUsuario,
+  attachBearerAuth,
 };

@@ -1,9 +1,9 @@
 const express = require("express");
-const { authorize } = require("../auth/authorize");
+const { authorize, authBearerCandidatoObrigatorio } = require("../auth/authorize");
 const whatsappService = require("../services/whatsapp-baileys");
 
 const router = express.Router();
-const apenasAdmin = authorize(["Administrador"]);
+const apenasAdmin = [authBearerCandidatoObrigatorio(), authorize(["Administrador"])];
 const internalApiKey = process.env.INTERNAL_API_KEY || "dev-local-key";
 
 function validarChaveInterna(req, res, next) {
@@ -14,15 +14,15 @@ function validarChaveInterna(req, res, next) {
   return next();
 }
 
-router.get("/status", apenasAdmin, (req, res) => {
-  res.status(200).json(whatsappService.getStatus());
+router.get("/status", ...apenasAdmin, (req, res) => {
+  res.status(200).json(whatsappService.getStatus(req.auth.CandidatoId));
 });
 
-router.post("/conectar", apenasAdmin, async (req, res, next) => {
+router.post("/conectar", ...apenasAdmin, async (req, res, next) => {
   const nomePerfil = String(req.body?.nomePerfil || "Canal principal").trim();
 
   try {
-    const atual = await whatsappService.connect(nomePerfil || "Canal principal");
+    const atual = await whatsappService.connect(req.auth.CandidatoId, nomePerfil || "Canal principal");
     return res.status(200).json({
       ...atual,
       message:
@@ -35,9 +35,9 @@ router.post("/conectar", apenasAdmin, async (req, res, next) => {
   }
 });
 
-router.post("/desconectar", apenasAdmin, async (req, res, next) => {
+router.post("/desconectar", ...apenasAdmin, async (req, res, next) => {
   try {
-    const atual = await whatsappService.disconnect();
+    const atual = await whatsappService.disconnect(req.auth.CandidatoId);
     return res.status(200).json({
       ...atual,
       message: "Canal WhatsApp desconectado.",
@@ -51,7 +51,11 @@ router.post("/send-interno", validarChaveInterna, async (req, res, next) => {
   try {
     const numero = String(req.body?.numero || "");
     const mensagem = String(req.body?.mensagem || "");
-    const envio = await whatsappService.sendText(numero, mensagem);
+    const candidatoId = Number(req.body?.candidato_id);
+    if (!Number.isInteger(candidatoId) || candidatoId <= 0) {
+      return res.status(400).json({ message: "Informe candidato_id valido no corpo da requisicao." });
+    }
+    const envio = await whatsappService.sendText(candidatoId, numero, mensagem);
     return res.status(200).json({
       message: "Mensagem enviada.",
       numero_normalizado: envio?.numeroNormalizado || null,
