@@ -1,7 +1,7 @@
 const crypto = require("crypto");
 const express = require("express");
 const { QueryTypes } = require("sequelize");
-const { sequelize, PessoaModel, EnderecoModel, ConsentimentoLgpdModel, CandidatoModel } = require("../models");
+const { sequelize, PessoaModel, EnderecoModel, ConsentimentoLgpdModel, CandidatoModel, UsuarioCandidatoModel, UsuarioModel, PapelModel } = require("../models");
 const { authBearerCandidatoObrigatorio } = require("../auth/authorize");
 
 const router = express.Router();
@@ -10,6 +10,18 @@ const TERMO_CONSENTIMENTO_ATUAL = {
   texto:
     "Autorizo o tratamento dos meus dados pessoais para fins de cadastro, contato e gestão do relacionamento, nos termos da LGPD.",
 };
+
+function ehCoordenador(req) {
+  return String(req.auth?.PapelNome ?? "") === "Coordenador";
+}
+
+function wherePessoasListagem(req) {
+  const base = { candidatoId: req.auth.CandidatoId };
+  if (ehCoordenador(req)) {
+    return { ...base, idCoordenador: req.auth.UsuarioId };
+  }
+  return base;
+}
 
 function limparNumeros(value) {
   return value != null ? String(value).replace(/\D/g, "") : "";
@@ -170,6 +182,99 @@ async function candidatoPorSlugPublico(res, slugParam) {
   return candidato;
 }
 
+/** Nomes de query reservados; demais chaves "flag" alfanuméricas são tratadas como token de divulgação. */
+const QUERY_PARAMS_RESERVADOS_LINK_CADASTRO = new Set(["coordenador"]);
+
+function chavesDivulgacaoLinkCadastroNaQuery(req) {
+  const q = req.query || {};
+  const found = [];
+  for (const k of Object.keys(q)) {
+    if (!k || QUERY_PARAMS_RESERVADOS_LINK_CADASTRO.has(k)) continue;
+    const raw = q[k];
+    const valStr =
+      raw === undefined || raw === null ? "" : Array.isArray(raw) ? String(raw[0] ?? "").trim() : String(raw).trim();
+    if (valStr !== "") continue;
+    if (!/^[A-Za-z0-9]{10,32}$/.test(k)) continue;
+    found.push(k);
+  }
+  return found;
+}
+
+router.get("/link-cadastro/:slugPublico/contexto", async (req, res, next) => {
+  try {
+    const candidato = await candidatoPorSlugPublico(res, req.params.slugPublico);
+    if (!candidato) return;
+
+    const vinculos = await UsuarioCandidatoModel.findAll({
+      where: { candidato_id: candidato.id },
+      include: [
+        {
+          model: UsuarioModel,
+          required: true,
+          attributes: ["id", "nome"],
+          include: [
+            {
+              model: PapelModel,
+              required: true,
+              attributes: [],
+              where: { nome: "Coordenador" },
+            },
+          ],
+        },
+      ],
+    });
+
+    const coordenadores = vinculos
+      .map((v) => v.UsuarioModel)
+      .filter(Boolean)
+      .map((u) => ({ id: u.id, nome: u.nome }))
+      .sort((a, b) => String(a.nome).localeCompare(String(b.nome), "pt"));
+
+    const chavesDivulgacao = chavesDivulgacaoLinkCadastroNaQuery(req);
+    if (chavesDivulgacao.length > 1) {
+      return res.status(400).json({ message: "Link de cadastro invalido." });
+    }
+
+    let preselected_coordenador_id = null;
+    if (chavesDivulgacao.length === 1) {
+      const tokenChave = chavesDivulgacao[0];
+      const vinculoToken = await UsuarioCandidatoModel.findOne({
+        where: {
+          candidato_id: candidato.id,
+          token_divulgacao_cadastro: tokenChave,
+        },
+        include: [
+          {
+            model: UsuarioModel,
+            required: true,
+            attributes: ["id"],
+            include: [
+              {
+                model: PapelModel,
+                required: true,
+                attributes: [],
+                where: { nome: "Coordenador" },
+              },
+            ],
+          },
+        ],
+      });
+      if (!vinculoToken) {
+        return res.status(400).json({ message: "Link de cadastro invalido." });
+      }
+      preselected_coordenador_id = vinculoToken.usuario_id;
+    }
+
+    return res.json({
+      candidato: { nome: candidato.nome, slug: candidato.slug },
+      coordenadores,
+      preselected_coordenador_id,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.post("/link-cadastro/:slugPublico", async (req, res, next) => {
   try {
     const candidato = await candidatoPorSlugPublico(res, req.params.slugPublico);
@@ -208,6 +313,37 @@ router.post("/link-cadastro/:slugPublico", async (req, res, next) => {
       });
     }
 
+    const idCoordenadorRaw = req.body?.id_coordenador;
+    const idCoordenador =
+      idCoordenadorRaw != null && idCoordenadorRaw !== ""
+        ? Number(idCoordenadorRaw)
+        : null;
+    if (!Number.isInteger(idCoordenador) || idCoordenador <= 0) {
+      return res.status(400).json({ message: "Selecione um coordenador válido." });
+    }
+
+    const vinculoCoord = await UsuarioCandidatoModel.findOne({
+      where: { candidato_id: candidato.id, usuario_id: idCoordenador },
+      include: [
+        {
+          model: UsuarioModel,
+          required: true,
+          attributes: ["id"],
+          include: [
+            {
+              model: PapelModel,
+              required: true,
+              attributes: ["nome"],
+              where: { nome: "Coordenador" },
+            },
+          ],
+        },
+      ],
+    });
+    if (!vinculoCoord) {
+      return res.status(400).json({ message: "Coordenador inválido para este candidato." });
+    }
+
     const cep = limparNumeros(endereco.cep || "").slice(0, 8);
     const uf = endereco.uf != null ? String(endereco.uf).trim().toUpperCase().slice(0, 2) : null;
 
@@ -221,6 +357,7 @@ router.post("/link-cadastro/:slugPublico", async (req, res, next) => {
           instagram: instagram || null,
           indicacao: indicacao || null,
           candidatoId: candidato.id,
+          idCoordenador,
         },
         { transaction },
       );
@@ -276,7 +413,7 @@ router.post("/link-cadastro/:slugPublico", async (req, res, next) => {
 router.get("/", authBearerCandidatoObrigatorio(), async (req, res, next) => {
   try {
     const pessoas = await PessoaModel.findAll({
-      where: { candidatoId: req.auth.CandidatoId },
+      where: wherePessoasListagem(req),
       include: [
         { model: EnderecoModel, required: false },
         { model: CandidatoModel, attributes: ["nome", "slug"], required: true },
@@ -318,18 +455,27 @@ router.get("/", authBearerCandidatoObrigatorio(), async (req, res, next) => {
 router.get("/estatisticas", authBearerCandidatoObrigatorio(), async (req, res, next) => {
   try {
     const cid = req.auth.CandidatoId;
-    const totalCadastros = await PessoaModel.count({ where: { candidatoId: cid } });
+    const coord = ehCoordenador(req);
+    const uid = req.auth.UsuarioId;
+    const filtroCoord = coord ? " AND p.id_coordenador = :uid " : "";
+    const totalCadastros = await PessoaModel.count({
+      where: wherePessoasListagem(req),
+    });
     const bairrosAgg = await sequelize.query(
       `
       SELECT TRIM(e.bairro) AS bairro, COUNT(*)::integer AS quantidade
       FROM endereco e
       INNER JOIN pessoa p ON p.id = e.pessoa_id
       WHERE p.candidato_id = :cid
+        ${filtroCoord}
         AND e.bairro IS NOT NULL AND TRIM(e.bairro) <> ''
       GROUP BY TRIM(e.bairro)
       ORDER BY quantidade DESC, TRIM(e.bairro) ASC
       `,
-      { type: QueryTypes.SELECT, replacements: { cid } },
+      {
+        type: QueryTypes.SELECT,
+        replacements: coord ? { cid, uid } : { cid },
+      },
     );
 
     return res.json({
@@ -346,6 +492,9 @@ router.get("/estatisticas", authBearerCandidatoObrigatorio(), async (req, res, n
 
 router.post("/", authBearerCandidatoObrigatorio(), async (req, res, next) => {
   try {
+    if (ehCoordenador(req)) {
+      return res.status(403).json({ message: "Operação reservada ao administrador." });
+    }
     const nome = req.body?.nome != null ? String(req.body.nome).trim() : "";
     const dataNascimento =
       req.body?.data_nascimento != null && String(req.body.data_nascimento).trim()
@@ -410,6 +559,9 @@ router.post("/", authBearerCandidatoObrigatorio(), async (req, res, next) => {
 
 router.post("/importar-csv", authBearerCandidatoObrigatorio(), async (req, res, next) => {
   try {
+    if (ehCoordenador(req)) {
+      return res.status(403).json({ message: "Operação reservada ao administrador." });
+    }
     const registros = Array.isArray(req.body?.registros) ? req.body.registros : [];
     if (!registros.length) {
       return res.status(400).json({ message: "Arquivo CSV sem registros válidos." });
@@ -545,6 +697,9 @@ router.post("/importar-csv", authBearerCandidatoObrigatorio(), async (req, res, 
 
 router.put("/:id", authBearerCandidatoObrigatorio(), async (req, res, next) => {
   try {
+    if (ehCoordenador(req)) {
+      return res.status(403).json({ message: "Operação reservada ao administrador." });
+    }
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) {
       return res.status(400).json({ message: "ID inválido." });
@@ -635,6 +790,9 @@ router.put("/:id", authBearerCandidatoObrigatorio(), async (req, res, next) => {
 
 router.delete("/:id", authBearerCandidatoObrigatorio(), async (req, res, next) => {
   try {
+    if (ehCoordenador(req)) {
+      return res.status(403).json({ message: "Operação reservada ao administrador." });
+    }
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) {
       return res.status(400).json({ message: "ID inválido." });

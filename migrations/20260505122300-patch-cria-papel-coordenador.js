@@ -14,7 +14,7 @@ module.exports = {
       [
         {
           nome: "Coordenador",
-          dashboard: "/admin",
+          dashboard: "/coordenador",
           createdAt: now,
           updatedAt: now,
         },

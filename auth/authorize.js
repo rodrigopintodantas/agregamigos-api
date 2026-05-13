@@ -31,6 +31,7 @@ async function attachBearerAuth(req, res) {
 
   const usuario = await UsuarioModel.findByPk(decoded.sub, {
     attributes: ["id", "login", "nome", "email", "telefone", "dataNascimento"],
+    include: [{ model: PapelModel, attributes: ["nome"], required: false }],
   });
   if (!usuario) {
     res.status(401).json({ message: "Usuario nao encontrado." });
@@ -49,6 +50,7 @@ async function attachBearerAuth(req, res) {
     CandidatoId:
       Number.isInteger(candidatoId) && candidatoId > 0 ? candidatoId : null,
     CandidatoSlug: candidatoSlugRaw && candidatoSlugRaw.length > 0 ? candidatoSlugRaw : null,
+    PapelNome: usuario.PapelModel?.nome != null ? String(usuario.PapelModel.nome) : null,
   };
 
   return usuario;

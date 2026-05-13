@@ -16,6 +16,11 @@ module.exports = (sequelize, DataTypes) => {
         primaryKey: true,
         field: "candidato_id",
       },
+      token_divulgacao_cadastro: {
+        type: DataTypes.STRING(24),
+        allowNull: true,
+        field: "token_divulgacao_cadastro",
+      },
     },
     {
       freezeTableName: true,

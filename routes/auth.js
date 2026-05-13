@@ -1,4 +1,5 @@
 const express = require("express");
+const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const { col, fn, where } = require("sequelize");
 const {
@@ -6,12 +7,22 @@ const {
   authBearerLogin,
   getPapeisPorUsuario,
   listarCandidatosDoUsuario,
+  authBearerCandidatoObrigatorio,
+  authorize,
 } = require("../auth/authorize");
 const { signAccessToken } = require("../auth/jwt");
 const { UsuarioModel, CandidatoModel, UsuarioCandidatoModel } = require("../models");
 const perfil = require("../auth/perfil");
 
 const router = express.Router();
+
+function gerarChaveDivulgacaoLinkCadastro() {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  const buf = crypto.randomBytes(16);
+  let s = "";
+  for (let i = 0; i < 16; i++) s += chars[buf[i] % chars.length];
+  return s;
+}
 
 router.post("/login", async (req, res, next) => {
   try {
@@ -73,6 +84,71 @@ router.post("/login", async (req, res, next) => {
 
 router.get("/", authorizeSemPerfilSelecionado());
 router.get("/perfil", authBearerLogin(), perfil);
+
+router.get(
+  "/link-cadastro-divulgacao-chave",
+  authBearerCandidatoObrigatorio(),
+  authorize(["Coordenador"]),
+  async (req, res, next) => {
+    try {
+      const usuarioId = req.auth.UsuarioId;
+      const candidatoId = req.auth.CandidatoId;
+
+      let row = await UsuarioCandidatoModel.findOne({
+        where: { usuario_id: usuarioId, candidato_id: candidatoId },
+        attributes: ["token_divulgacao_cadastro"],
+      });
+      if (!row) {
+        return res.status(403).json({ message: "Sem vinculo com este candidato." });
+      }
+      if (row.token_divulgacao_cadastro) {
+        return res.json({ chave_publica: row.token_divulgacao_cadastro });
+      }
+
+      for (let attempt = 0; attempt < 24; attempt++) {
+        const candidate = gerarChaveDivulgacaoLinkCadastro();
+        try {
+          const [updated] = await UsuarioCandidatoModel.update(
+            { token_divulgacao_cadastro: candidate },
+            {
+              where: {
+                usuario_id: usuarioId,
+                candidato_id: candidatoId,
+                token_divulgacao_cadastro: null,
+              },
+            },
+          );
+          if (updated === 1) {
+            return res.json({ chave_publica: candidate });
+          }
+          row = await UsuarioCandidatoModel.findOne({
+            where: { usuario_id: usuarioId, candidato_id: candidatoId },
+            attributes: ["token_divulgacao_cadastro"],
+          });
+          if (row?.token_divulgacao_cadastro) {
+            return res.json({ chave_publica: row.token_divulgacao_cadastro });
+          }
+        } catch (err) {
+          if (err?.name === "SequelizeUniqueConstraintError") {
+            row = await UsuarioCandidatoModel.findOne({
+              where: { usuario_id: usuarioId, candidato_id: candidatoId },
+              attributes: ["token_divulgacao_cadastro"],
+            });
+            if (row?.token_divulgacao_cadastro) {
+              return res.json({ chave_publica: row.token_divulgacao_cadastro });
+            }
+            continue;
+          }
+          throw err;
+        }
+      }
+
+      return res.status(500).json({ message: "Nao foi possivel gerar chave de divulgacao." });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 router.post("/candidato", authBearerLogin(), async (req, res, next) => {
   try {
