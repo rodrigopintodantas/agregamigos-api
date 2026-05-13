@@ -15,6 +15,8 @@ function classificarSentimento(textoBruto) {
   if (!t) return "desconhecido";
 
   const negativos = [
+    /^negativo[\s!.]*$/,
+    /\bcom certeza\b.*\bnao\b/,
     /\bnao quero\b/,
     /\bnao tenho interesse\b/,
     /\bnao me mande\b/,
@@ -49,6 +51,10 @@ function classificarSentimento(textoBruto) {
   }
 
   const positivos = [
+    /^positivo[\s!.]*$/,
+    /\bcom certeza\b/,
+    /\bcom toda certeza\b/,
+    /\bcertamente\b/,
     /\bsim\b/,
     /\bclaro\b/,
     /\bok\b/,

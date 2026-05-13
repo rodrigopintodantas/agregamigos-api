@@ -49,6 +49,11 @@ router.post("/", ...apenasAdmin, async (req, res, next) => {
       return res.status(400).json({ message: "Perfil não encontrado." });
     }
 
+    const loginCriador = String(req.auth?.preferred_username || "").trim().toLowerCase();
+    if (String(papel.nome) === "Administrador" && loginCriador !== "admin") {
+      return res.status(403).json({ message: "Apenas o usuario admin pode criar outros administradores." });
+    }
+
     const loginExistente = await UsuarioModel.unscoped().findOne({
       where: where(fn("lower", col("login")), login.toLowerCase()),
     });
