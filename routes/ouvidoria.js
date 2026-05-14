@@ -146,7 +146,6 @@ router.post("/importar-csv", apenasAdmin, async (req, res, next) => {
 
     const CHUNK = 500;
     await sequelize.transaction(async (transaction) => {
-      await sequelize.query('TRUNCATE TABLE "ouvidoria" RESTART IDENTITY', { transaction });
       for (let i = 0; i < paraCriar.length; i += CHUNK) {
         const slice = paraCriar.slice(i, i + CHUNK);
         await OuvidoriaModel.bulkCreate(slice, { transaction });
@@ -155,7 +154,7 @@ router.post("/importar-csv", apenasAdmin, async (req, res, next) => {
 
     const inseridos = paraCriar.length;
     return res.status(201).json({
-      message: `${inseridos} manifestação(ões) importada(s). Os dados anteriores foram substituídos.`,
+      message: `${inseridos} manifestação(ões) adicionada(s) à base, sem remover os registros já existentes.`,
       inseridos,
       ignorados: 0,
       total: inseridos,
