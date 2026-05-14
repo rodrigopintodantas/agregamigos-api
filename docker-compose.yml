@@ -12,6 +12,17 @@ services:
       - redis
     restart: unless-stopped
 
+  worker-campanha:
+    build: .
+    container_name: agregamigos-worker-campanha
+    env_file:
+      - .env
+    command: ["npm", "run", "worker:campanha"]
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+
   postgres:
     image: postgres:12.3
     container_name: agregamigos-postgres
