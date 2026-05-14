@@ -21,7 +21,10 @@ const jsonParserPadrao = express.json({ limit: "5mb" });
 const jsonParserOuvidoriaImport = express.json({ limit: "200mb" });
 app.use((req, res, next) => {
   const pathOnly = (req.originalUrl ?? "").split("?")[0];
-  if (req.method === "POST" && pathOnly.endsWith("/ouvidoria/importar-csv")) {
+  if (
+    req.method === "POST" &&
+    (pathOnly.endsWith("/ouvidoria/importar-csv") || pathOnly.includes("/ouvidoria/importar-csv"))
+  ) {
     return jsonParserOuvidoriaImport(req, res, next);
   }
   return jsonParserPadrao(req, res, next);
