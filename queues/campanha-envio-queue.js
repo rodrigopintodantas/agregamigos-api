@@ -1,16 +1,57 @@
+const fs = require("fs");
 const { Queue } = require("bullmq");
 const IORedis = require("ioredis");
 
 const QUEUE_NAME = "campanha-envio";
-const defaultRedisHost = process.env.DOCKER_CONTAINER === "true" ? "redis" : "127.0.0.1";
 
-const redisConnection = new IORedis({
-  host: process.env.REDIS_HOST || defaultRedisHost,
-  port: Number(process.env.REDIS_PORT || 6379),
-  username: process.env.REDIS_USERNAME || undefined,
-  password: process.env.REDIS_PASSWORD || undefined,
-  maxRetriesPerRequest: null,
-});
+/**
+ * Host por defeito quando REDIS_HOST não está definido, ou quando está em loopback
+ * dentro de Docker (ficheiro .env copiado do exemplo aponta para 127.0.0.1, mas o Redis
+ * é o serviço `redis` na mesma rede).
+ */
+function resolverRedisHostPadrao() {
+  const emDocker =
+    process.env.DOCKER_CONTAINER === "true" ||
+    (() => {
+      try {
+        return fs.existsSync("/.dockerenv");
+      } catch {
+        return false;
+      }
+    })();
+  const hostRaw = process.env.REDIS_HOST != null ? String(process.env.REDIS_HOST).trim() : "";
+  if (hostRaw) {
+    const loopback = hostRaw === "127.0.0.1" || hostRaw === "localhost" || hostRaw === "::1";
+    if (emDocker && loopback) {
+      return "redis";
+    }
+    return hostRaw;
+  }
+  if (emDocker) {
+    return "redis";
+  }
+  return "127.0.0.1";
+}
+
+function criarRedisConnection() {
+  const redisUrl = process.env.REDIS_URL != null ? String(process.env.REDIS_URL).trim() : "";
+  const common = {
+    maxRetriesPerRequest: null,
+    enableReadyCheck: false,
+  };
+  if (redisUrl) {
+    return new IORedis(redisUrl, common);
+  }
+  return new IORedis({
+    ...common,
+    host: resolverRedisHostPadrao(),
+    port: Number(process.env.REDIS_PORT || 6379),
+    username: process.env.REDIS_USERNAME || undefined,
+    password: process.env.REDIS_PASSWORD || undefined,
+  });
+}
+
+const redisConnection = criarRedisConnection();
 
 const campanhaEnvioQueue = new Queue(QUEUE_NAME, {
   connection: redisConnection,
