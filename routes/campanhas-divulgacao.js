@@ -456,6 +456,13 @@ router.post("/:id/iniciar", ...apenasAdmin, async (req, res, next) => {
       return res.status(404).json({ message: "Campanha nao encontrada." });
     }
 
+    const loginIniciar = String(req.auth.preferred_username ?? "").trim().toLowerCase();
+    if (loginIniciar !== "admin") {
+      return res.status(403).json({
+        message: "Apenas o usuario com login admin pode iniciar o envio da campanha.",
+      });
+    }
+
     if (String(campanha.status) === "cancelada") {
       return res.status(400).json({ message: "Campanha cancelada nao pode ser iniciada." });
     }
