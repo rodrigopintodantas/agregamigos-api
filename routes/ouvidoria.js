@@ -12,6 +12,19 @@ const CAMPOS_OUVIDORIA = [
   "ds_tipo",
   "ds_assunto",
   "ds_ra",
+  "nm_setor",
+  "nm_orgao",
+  "ds_canal",
+];
+
+/** Exportações / payloads antigos com os nomes de coluna anteriores à migration. */
+const CAMPOS_OUVIDORIA_LEGADO = [
+  "dt_manifestacao",
+  "fl_indicador",
+  "ds_situacao",
+  "ds_tipo",
+  "ds_assunto",
+  "ds_ra",
   "nm_orgao",
   "nm_secretaria",
   "ds_canal",
@@ -76,7 +89,25 @@ function rowMapDeRegistro(row) {
   return m;
 }
 
-function registroParaCreate(rowMap) {
+function formatoImportacaoOuvidoriaLegado(chavesArquivo) {
+  if (chavesArquivo.has("nm_setor")) return false;
+  return chavesArquivo.has("nm_secretaria");
+}
+
+function registroParaCreate(rowMap, legado) {
+  if (legado) {
+    return {
+      dtManifestacao: parseDateTimeNullable(valor(rowMap, "dt_manifestacao")),
+      flIndicador: parseBoolNullable(valor(rowMap, "fl_indicador")),
+      dsSituacao: valor(rowMap, "ds_situacao"),
+      dsTipo: valor(rowMap, "ds_tipo"),
+      dsAssunto: valor(rowMap, "ds_assunto"),
+      dsRa: valor(rowMap, "ds_ra"),
+      nmSetor: valor(rowMap, "nm_orgao"),
+      nmOrgao: valor(rowMap, "nm_secretaria"),
+      dsCanal: valor(rowMap, "ds_canal"),
+    };
+  }
   return {
     dtManifestacao: parseDateTimeNullable(valor(rowMap, "dt_manifestacao")),
     flIndicador: parseBoolNullable(valor(rowMap, "fl_indicador")),
@@ -84,8 +115,8 @@ function registroParaCreate(rowMap) {
     dsTipo: valor(rowMap, "ds_tipo"),
     dsAssunto: valor(rowMap, "ds_assunto"),
     dsRa: valor(rowMap, "ds_ra"),
+    nmSetor: valor(rowMap, "nm_setor"),
     nmOrgao: valor(rowMap, "nm_orgao"),
-    nmSecretaria: valor(rowMap, "nm_secretaria"),
     dsCanal: valor(rowMap, "ds_canal"),
   };
 }
@@ -100,8 +131,8 @@ function serializar(v) {
     ds_tipo: j.dsTipo ?? null,
     ds_assunto: j.dsAssunto ?? null,
     ds_ra: j.dsRa ?? null,
+    nm_setor: j.nmSetor ?? null,
     nm_orgao: j.nmOrgao ?? null,
-    nm_secretaria: j.nmSecretaria ?? null,
     ds_canal: j.dsCanal ?? null,
   };
 }
@@ -124,7 +155,9 @@ router.post("/importar-csv", apenasAdmin, async (req, res, next) => {
 
     const primeiraLinha = registros[0] && typeof registros[0] === "object" ? registros[0] : {};
     const chavesArquivo = new Set(Object.keys(primeiraLinha).map((k) => normalizarCabecalhoCsv(k)));
-    const faltando = CAMPOS_OUVIDORIA.filter((h) => !chavesArquivo.has(h));
+    const legado = formatoImportacaoOuvidoriaLegado(chavesArquivo);
+    const camposObrigatorios = legado ? CAMPOS_OUVIDORIA_LEGADO : CAMPOS_OUVIDORIA;
+    const faltando = camposObrigatorios.filter((h) => !chavesArquivo.has(h));
     if (faltando.length) {
       return res.status(400).json({
         message: `Dados inválidos: faltam campos obrigatórios: ${faltando.join(", ")}.`,
@@ -134,8 +167,8 @@ router.post("/importar-csv", apenasAdmin, async (req, res, next) => {
     const paraCriar = [];
     for (const item of registros) {
       const rowMap = rowMapDeRegistro(item);
-      const row = registroParaCreate(rowMap);
-      const temAlgumDado = CAMPOS_OUVIDORIA.some((c) => valor(rowMap, c) != null);
+      const row = registroParaCreate(rowMap, legado);
+      const temAlgumDado = camposObrigatorios.some((c) => valor(rowMap, c) != null);
       if (!temAlgumDado) continue;
       paraCriar.push(row);
     }

@@ -39,15 +39,15 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: true,
         field: "ds_ra",
       },
+      nmSetor: {
+        type: DataTypes.TEXT,
+        allowNull: true,
+        field: "nm_setor",
+      },
       nmOrgao: {
         type: DataTypes.TEXT,
         allowNull: true,
         field: "nm_orgao",
-      },
-      nmSecretaria: {
-        type: DataTypes.TEXT,
-        allowNull: true,
-        field: "nm_secretaria",
       },
       dsCanal: {
         type: DataTypes.STRING(40),
