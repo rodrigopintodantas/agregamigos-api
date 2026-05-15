@@ -1,5 +1,6 @@
 require("dotenv").config();
 
+const fs = require("fs");
 const { Worker } = require("bullmq");
 const {
   CampanhaDivulgacaoModel,
@@ -11,6 +12,46 @@ const {
   sequelize,
 } = require("../models");
 const { QUEUE_NAME, redisConnection } = require("../queues/campanha-envio-queue");
+
+/** URL base da API para o worker chamar /whatsapp/send-interno (Baileys vive no processo da API). */
+function resolverInternalApiUrl() {
+  const emDocker =
+    process.env.DOCKER_CONTAINER === "true" ||
+    (() => {
+      try {
+        return fs.existsSync("/.dockerenv");
+      } catch {
+        return false;
+      }
+    })();
+  const port = String(process.env.PORT || "3000");
+  const padraoDocker = `http://api:${port}/api`;
+  const padraoLocal = `http://127.0.0.1:${port}/api`;
+
+  let raw = process.env.INTERNAL_API_URL != null ? String(process.env.INTERNAL_API_URL).trim() : "";
+  if (!raw) {
+    return emDocker ? padraoDocker : padraoLocal;
+  }
+  if (!raw.startsWith("http://") && !raw.startsWith("https://")) {
+    raw = `http://${raw}`;
+  }
+  raw = raw.replace(/\/+$/, "");
+  if (!raw.endsWith("/api")) {
+    raw = `${raw}/api`;
+  }
+  try {
+    const host = new URL(raw).hostname;
+    const loopback = host === "127.0.0.1" || host === "localhost" || host === "::1";
+    if (emDocker && loopback) {
+      return padraoDocker;
+    }
+  } catch {
+    /* usa raw abaixo */
+  }
+  return raw;
+}
+
+const INTERNAL_API_URL_RESOLVIDA = resolverInternalApiUrl();
 
 function limitarErro(err) {
   return String(err?.message || "Falha ao enviar mensagem.").slice(0, 1000);
@@ -43,20 +84,32 @@ function aplicarVariaveisMensagem(template, pessoa) {
 }
 
 async function enviarViaApi(numero, mensagem, candidatoId) {
-  const apiUrl = process.env.INTERNAL_API_URL || "http://127.0.0.1:3000/api";
+  const apiUrl = INTERNAL_API_URL_RESOLVIDA;
   const internalApiKey = process.env.INTERNAL_API_KEY || "dev-local-key";
   const cid = Number(candidatoId);
   if (!Number.isInteger(cid) || cid <= 0) {
     throw new Error("candidato_id invalido para envio WhatsApp.");
   }
-  const response = await fetch(`${apiUrl}/whatsapp/send-interno`, {
+  let response;
+  try {
+    response = await fetch(`${apiUrl}/whatsapp/send-interno`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "x-internal-api-key": internalApiKey,
     },
     body: JSON.stringify({ numero, mensagem, candidato_id: cid }),
-  });
+    });
+  } catch (err) {
+    const msg = String(err?.message || err);
+    if (msg.toLowerCase().includes("fetch failed") || err?.cause?.code === "ECONNREFUSED") {
+      throw new Error(
+        `Nao foi possivel contactar a API interna em ${apiUrl}. ` +
+          "Em Docker, o worker deve usar INTERNAL_API_URL=http://api:3000/api (mesma chave INTERNAL_API_KEY que a API).",
+      );
+    }
+    throw err;
+  }
   if (!response.ok) {
     let reason = `Falha HTTP ${response.status}`;
     try {
@@ -233,6 +286,7 @@ async function processarEnvio(job) {
 
 async function iniciarWorker() {
   await sequelize.authenticate();
+  console.log(`[worker] API interna (envio WhatsApp): ${INTERNAL_API_URL_RESOLVIDA}`);
   const worker = new Worker(QUEUE_NAME, processarEnvio, {
     connection: redisConnection,
     concurrency: Number(process.env.CAMPANHA_ENVIO_CONCURRENCY || 4),

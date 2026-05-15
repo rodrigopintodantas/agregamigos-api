@@ -17,8 +17,12 @@ services:
     container_name: agregamigos-worker-campanha
     env_file:
       - .env
+    environment:
+      # Baileys corre no contentor `api`; 127.0.0.1 aqui falha com "fetch failed".
+      INTERNAL_API_URL: http://api:3000/api
     command: ["npm", "run", "worker:campanha"]
     depends_on:
+      - api
       - redis
       - postgres
     restart: unless-stopped
