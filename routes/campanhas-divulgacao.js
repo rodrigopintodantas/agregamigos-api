@@ -15,6 +15,12 @@ const {
   validarFilaDisponivel,
   removerJobsPendentesDaCampanha,
 } = require("../queues/campanha-envio-queue");
+const {
+  mesmoDiaEmFusoCampanha,
+  adicionarDiasEmFusoCampanha,
+  turnoPorHoraEmFusoCampanha,
+  baseTurnoEmFusoCampanha,
+} = require("../services/campanha-agendamento-fuso");
 
 const router = express.Router();
 const apenasAdmin = [authBearerCandidatoObrigatorio(), authorize(["Administrador"])];
@@ -33,40 +39,10 @@ function indiceTurno(turno) {
   return Math.max(0, TURNOS.indexOf(turno));
 }
 
-function turnoPorHora(date) {
-  const hora = date.getHours();
-  if (hora < 12) return "manha";
-  if (hora < 18) return "tarde";
-  return "noite";
-}
-
-function baseTurno(diaBase, turno) {
-  const d = new Date(diaBase);
-  d.setSeconds(0, 0);
-  if (turno === "manha") {
-    d.setHours(8, 0, 0, 0);
-    return d;
-  }
-  if (turno === "tarde") {
-    d.setHours(13, 0, 0, 0);
-    return d;
-  }
-  d.setHours(19, 0, 0, 0);
-  return d;
-}
-
 function janelaTurno(turno) {
   if (turno === "manha") return { min: 0, max: 239 }; // 08:00-11:59
   if (turno === "tarde") return { min: 0, max: 299 }; // 13:00-17:59
   return { min: 0, max: 179 }; // 19:00-21:59
-}
-
-function mesmoDia(a, b) {
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  );
 }
 
 function gerarAgendamentoPorDisparo(index, mensagensPorTurno, disparoEm, usedKeys) {
@@ -76,13 +52,13 @@ function gerarAgendamentoPorDisparo(index, mensagensPorTurno, disparoEm, usedKey
   if (index === 0) {
     usedKeys.add(primeiroEnvio.toISOString());
     return {
-      turno: turnoPorHora(primeiroEnvio),
+      turno: turnoPorHoraEmFusoCampanha(primeiroEnvio),
       agendadoPara: primeiroEnvio,
     };
   }
 
   const porTurno = Math.max(1, mensagensPorTurno);
-  const turnoInicial = turnoPorHora(primeiroEnvio);
+  const turnoInicial = turnoPorHoraEmFusoCampanha(primeiroEnvio);
   const bloco = Math.floor(index / porTurno);
   const turno = TURNOS[(indiceTurno(turnoInicial) + bloco) % TURNOS.length];
   const ciclosCompletos = Math.floor((indiceTurno(turnoInicial) + bloco) / TURNOS.length);
@@ -91,12 +67,11 @@ function gerarAgendamentoPorDisparo(index, mensagensPorTurno, disparoEm, usedKey
   let offsetDia = ciclosCompletos;
   let candidate = null;
   while (!candidate) {
-    const diaAlvo = new Date(primeiroEnvio);
-    diaAlvo.setDate(primeiroEnvio.getDate() + offsetDia);
-    const base = baseTurno(diaAlvo, turno);
+    const diaAlvo = adicionarDiasEmFusoCampanha(primeiroEnvio, offsetDia);
+    const base = baseTurnoEmFusoCampanha(diaAlvo, turno);
 
     let minFaixa = faixa.min;
-    if (mesmoDia(base, primeiroEnvio)) {
+    if (mesmoDiaEmFusoCampanha(base, primeiroEnvio)) {
       const minutosDecorridos = Math.floor((primeiroEnvio.getTime() - base.getTime()) / 60000);
       minFaixa = Math.max(minFaixa, minutosDecorridos);
     }
