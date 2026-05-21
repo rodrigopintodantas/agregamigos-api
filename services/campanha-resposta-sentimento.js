@@ -75,6 +75,8 @@ function classificarSentimento(textoBruto) {
     /\bbeleza\b/,
     /\bblz\b/,
     /\botimo\b/,
+    /\bmuito bom\b/,
+    /\be certo\b/,
     /\bobrigad/,
     /\bconfirmo\b/,
     /\baceito\b/,

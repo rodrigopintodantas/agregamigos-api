@@ -41,8 +41,8 @@ function indiceTurno(turno) {
 
 function janelaTurno(turno) {
   if (turno === "manha") return { min: 0, max: 239 }; // 08:00-11:59
-  if (turno === "tarde") return { min: 0, max: 299 }; // 13:00-17:59
-  return { min: 0, max: 179 }; // 19:00-21:59
+  if (turno === "tarde") return { min: 0, max: 239 }; // 13:00-16:59
+  return { min: 0, max: 149 }; // 18:00-20:29
 }
 
 function gerarAgendamentoPorDisparo(index, mensagensPorTurno, disparoEm, usedKeys) {

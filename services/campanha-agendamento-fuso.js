@@ -70,7 +70,7 @@ function turnoPorHoraEmFusoCampanha(date) {
 
 function baseTurnoEmFusoCampanha(diaReferencia, turno) {
   const p = partesEmFusoCampanha(diaReferencia);
-  const hour = turno === "manha" ? 8 : turno === "tarde" ? 13 : 19;
+  const hour = turno === "manha" ? 8 : turno === "tarde" ? 13 : 18;
   return instanteEmFusoCampanha(p.year, p.month, p.day, hour, 0, 0);
 }
 
