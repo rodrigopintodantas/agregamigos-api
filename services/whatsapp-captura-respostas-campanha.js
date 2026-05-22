@@ -154,7 +154,16 @@ function limparTexto(texto) {
     .slice(0, TEXTO_MAX);
 }
 
-async function buscarDestinatarioPorCitacao(quotedId, recvAt, candidatoId) {
+function filtroCampanhaCanal(candidatoId, canalId) {
+  const where = { candidatoId };
+  const cid = Number(canalId);
+  if (Number.isInteger(cid) && cid > 0) {
+    where.whatsapp_canal_id = cid;
+  }
+  return where;
+}
+
+async function buscarDestinatarioPorCitacao(quotedId, recvAt, candidatoId, canalId) {
   const qid = waIdParaString(quotedId);
   if (!qid) return null;
   const janelaMs = obterJanelaMs();
@@ -170,14 +179,14 @@ async function buscarDestinatarioPorCitacao(quotedId, recvAt, candidatoId) {
         model: CampanhaDivulgacaoModel,
         attributes: [],
         required: true,
-        where: { candidatoId },
+        where: filtroCampanhaCanal(candidatoId, canalId),
       },
     ],
     order: [["enviado_em", "DESC"]],
   });
 }
 
-async function buscarDestinatarioPorJanela(variantesDigitos, recvAt, candidatoId) {
+async function buscarDestinatarioPorJanela(variantesDigitos, recvAt, candidatoId, canalId) {
   const janelaMs = obterJanelaMs();
   const limiteInferior = new Date(recvAt.getTime() - janelaMs);
   const lista = Array.isArray(variantesDigitos) ? variantesDigitos.filter(Boolean) : [];
@@ -194,7 +203,7 @@ async function buscarDestinatarioPorJanela(variantesDigitos, recvAt, candidatoId
         model: CampanhaDivulgacaoModel,
         attributes: [],
         required: true,
-        where: { candidatoId },
+        where: filtroCampanhaCanal(candidatoId, canalId),
       },
     ],
     order: [["enviado_em", "DESC"]],
@@ -274,7 +283,7 @@ async function gravarRespostaSeAplicavel(destinatario, waMsgId, texto, recvAt) {
   });
 }
 
-async function processarMensagemInbound(msg, upsertType, candidatoId) {
+async function processarMensagemInbound(msg, upsertType, candidatoId, canalId) {
   try {
     if (!msg?.key) return;
     if (msg.key.fromMe) return;
@@ -304,10 +313,10 @@ async function processarMensagemInbound(msg, upsertType, candidatoId) {
 
     let destinatario = null;
     if (quotedId) {
-      destinatario = await buscarDestinatarioPorCitacao(quotedId, recvAt, candidatoId);
+      destinatario = await buscarDestinatarioPorCitacao(quotedId, recvAt, candidatoId, canalId);
     }
     if (!destinatario) {
-      destinatario = await buscarDestinatarioPorJanela(variantes, recvAt, candidatoId);
+      destinatario = await buscarDestinatarioPorJanela(variantes, recvAt, candidatoId, canalId);
     }
     if (!destinatario) {
       debugCaptura("sem destinatario", { variantes, quotedId });
@@ -320,11 +329,16 @@ async function processarMensagemInbound(msg, upsertType, candidatoId) {
   }
 }
 
-function anexarCapturaRespostas(socket, candidatoId) {
+function anexarCapturaRespostas(socket, candidatoId, canalId) {
   if (!socket?.ev) return;
   const cid = Number(candidatoId);
+  const kid = Number(canalId);
   if (!Number.isInteger(cid) || cid <= 0) {
     console.error("[captura-respostas] candidatoId invalido; captura nao anexada.");
+    return;
+  }
+  if (!Number.isInteger(kid) || kid <= 0) {
+    console.error("[captura-respostas] canalId invalido; captura nao anexada.");
     return;
   }
 
@@ -332,7 +346,7 @@ function anexarCapturaRespostas(socket, candidatoId) {
     // `notify` = mensagem em tempo real; `append` = fila/offline/histórico — respostas do usuário costumam chegar nas duas.
     if ((type !== "notify" && type !== "append") || !Array.isArray(messages)) return;
     for (const msg of messages) {
-      await processarMensagemInbound(msg, type, cid);
+      await processarMensagemInbound(msg, type, cid, kid);
     }
   });
 }

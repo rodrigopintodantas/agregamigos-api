@@ -1,4 +1,5 @@
-require("dotenv").config();
+const path = require("path");
+require("dotenv").config({ path: path.resolve(__dirname, "../.env") });
 
 const fs = require("fs");
 const { Worker } = require("bullmq");
@@ -29,8 +30,10 @@ function resolverInternalApiUrl() {
   const padraoLocal = `http://127.0.0.1:${port}/api`;
 
   let raw = process.env.INTERNAL_API_URL != null ? String(process.env.INTERNAL_API_URL).trim() : "";
+  // Sem URL explicita: API e worker no mesmo host/contentor (npm start, devcontainer).
+  // O compose do worker de producao define INTERNAL_API_URL=http://api:3000/api no environment.
   if (!raw) {
-    return emDocker ? padraoDocker : padraoLocal;
+    return padraoLocal;
   }
   if (!raw.startsWith("http://") && !raw.startsWith("https://")) {
     raw = `http://${raw}`;
@@ -44,6 +47,13 @@ function resolverInternalApiUrl() {
     const loopback = host === "127.0.0.1" || host === "localhost" || host === "::1";
     if (emDocker && loopback) {
       return padraoDocker;
+    }
+    // .env de producao/Docker com host `api`, mas worker a correr no host (npm start)
+    if (!emDocker && host === "api") {
+      console.warn(
+        "[worker] INTERNAL_API_URL aponta para host 'api' fora do Docker; usando API local.",
+      );
+      return padraoLocal;
     }
   } catch {
     /* usa raw abaixo */
@@ -83,12 +93,16 @@ function aplicarVariaveisMensagem(template, pessoa) {
     .replace(/XXXX/g, nomeCompleto);
 }
 
-async function enviarViaApi(numero, mensagem, candidatoId) {
+async function enviarViaApi(numero, mensagem, candidatoId, whatsappCanalId) {
   const apiUrl = INTERNAL_API_URL_RESOLVIDA;
   const internalApiKey = process.env.INTERNAL_API_KEY || "dev-local-key";
   const cid = Number(candidatoId);
+  const canalId = Number(whatsappCanalId);
   if (!Number.isInteger(cid) || cid <= 0) {
     throw new Error("candidato_id invalido para envio WhatsApp.");
+  }
+  if (!Number.isInteger(canalId) || canalId <= 0) {
+    throw new Error("whatsapp_canal_id invalido para envio WhatsApp.");
   }
   let response;
   try {
@@ -98,7 +112,12 @@ async function enviarViaApi(numero, mensagem, candidatoId) {
       "Content-Type": "application/json",
       "x-internal-api-key": internalApiKey,
     },
-    body: JSON.stringify({ numero, mensagem, candidato_id: cid }),
+    body: JSON.stringify({
+      numero,
+      mensagem,
+      candidato_id: cid,
+      whatsapp_canal_id: canalId,
+    }),
     });
   } catch (err) {
     const msg = String(err?.message || err);
@@ -190,9 +209,22 @@ async function processarEnvio(job) {
   if (String(destinatario.status) !== "pendente") return;
 
   const campanha = await CampanhaDivulgacaoModel.findByPk(campanhaId, {
-    attributes: ["id", "status", "candidatoId"],
+    attributes: ["id", "status", "candidatoId", "whatsapp_canal_id"],
   });
   if (!campanha) return;
+  const canalId = Number(campanha.whatsapp_canal_id);
+  if (!Number.isInteger(canalId) || canalId <= 0) {
+    await destinatario.update({
+      status: "erro",
+      tentativas: destinatario.tentativas + 1,
+      falha_entrega: true,
+      falha_codigo: "canal_ausente",
+      falha_em: new Date(),
+      erro_ultimo: "Campanha sem canal WhatsApp definido.",
+    });
+    await atualizarResumoCampanha(campanhaId);
+    return;
+  }
   if (String(campanha.status) === "cancelada") {
     await destinatario.update({
       status: "cancelado",
@@ -239,7 +271,12 @@ async function processarEnvio(job) {
 
   const transaction = await sequelize.transaction();
   try {
-    const envio = await enviarViaApi(numero, mensagem, campanha.candidatoId);
+    const envio = await enviarViaApi(
+      numero,
+      mensagem,
+      campanha.candidatoId,
+      campanha.whatsapp_canal_id,
+    );
     const whatsappArmazenar = String(envio.whatsappMatch || envio.numeroNormalizado || numero || "")
       .replace(/\D/g, "")
       .slice(0, 20);

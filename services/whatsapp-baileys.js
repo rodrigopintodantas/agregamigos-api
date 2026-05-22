@@ -8,6 +8,7 @@ const {
   useMultiFileAuthState,
 } = require("@whiskeysockets/baileys");
 const { anexarCapturaRespostas } = require("./whatsapp-captura-respostas-campanha");
+const { persistirEstadoCanal, formatarNumeroCanal } = require("./whatsapp-canal-db");
 
 function normalizarNumeroBrasil(numero) {
   let digits = String(numero || "").replace(/\D/g, "");
@@ -37,10 +38,6 @@ function normalizarNumeroBrasil(numero) {
   return digits;
 }
 
-/**
- * Dígitos do telefone no user do JID (ignora sufixo :agente).
- * Deve bater com o que chega em mensagens recebidas do mesmo contato.
- */
 function extrairDigitosUsuarioJidWhatsapp(jid) {
   const user = String(jid || "").split("@")[0] || "";
   if (!user) return "";
@@ -48,25 +45,60 @@ function extrairDigitosUsuarioJidWhatsapp(jid) {
   return semAgente.replace(/\D/g, "");
 }
 
+function listarEntradasAuth(pasta) {
+  try {
+    return fs.readdirSync(pasta);
+  } catch {
+    return [];
+  }
+}
+
 /**
- * Move credenciais antigas (arquivos soltos em `.baileys_auth/`) para `.baileys_auth/candidato_1/`.
+ * Pasta de auth por canal: `.baileys_auth/candidato_{id}/canal_{canalId}/`.
+ * Migra credenciais legadas (arquivos soltos em `candidato_{id}/`) para o primeiro canal.
  */
-function resolverPastaAuthBaileys(candidatoId) {
-  const id = Number(candidatoId);
-  if (!Number.isInteger(id) || id <= 0) {
+function resolverPastaAuthBaileys(candidatoId, canalId) {
+  const cid = Number(candidatoId);
+  const kid = Number(canalId);
+  if (!Number.isInteger(cid) || cid <= 0) {
     throw new Error("candidato_id invalido para pasta de auth do WhatsApp.");
+  }
+  if (!Number.isInteger(kid) || kid <= 0) {
+    throw new Error("canal_id invalido para pasta de auth do WhatsApp.");
   }
 
   const root = path.join(process.cwd(), ".baileys_auth");
-  const dest = path.join(root, `candidato_${id}`);
+  const candidatoDir = path.join(root, `candidato_${cid}`);
+  const dest = path.join(candidatoDir, `canal_${kid}`);
 
-  if (fs.existsSync(dest)) {
-    return dest;
+  fs.mkdirSync(dest, { recursive: true });
+
+  const legacyCreds = path.join(candidatoDir, "creds.json");
+  const destCreds = path.join(dest, "creds.json");
+  if (fs.existsSync(legacyCreds) && !fs.existsSync(destCreds)) {
+    const entries = listarEntradasAuth(candidatoDir);
+    const hasCanalSubdirs = entries.some((e) => e.startsWith("canal_"));
+    if (!hasCanalSubdirs) {
+      for (const name of entries) {
+        if (name.startsWith("canal_")) continue;
+        const from = path.join(candidatoDir, name);
+        let st;
+        try {
+          st = fs.statSync(from);
+        } catch {
+          continue;
+        }
+        if (st.isFile() || st.isDirectory()) {
+          const to = path.join(dest, name);
+          if (!fs.existsSync(to)) {
+            fs.renameSync(from, to);
+          }
+        }
+      }
+    }
   }
 
-  fs.mkdirSync(root, { recursive: true });
-
-  if (id === 1) {
+  if (cid === 1) {
     let entries = [];
     try {
       entries = fs.readdirSync(root);
@@ -75,8 +107,7 @@ function resolverPastaAuthBaileys(candidatoId) {
     }
     const hasScoped = entries.some((e) => e.startsWith("candidato_"));
     const hasCredsAtRoot = entries.includes("creds.json");
-    if (!hasScoped && hasCredsAtRoot) {
-      fs.mkdirSync(dest, { recursive: true });
+    if (!hasScoped && hasCredsAtRoot && !fs.existsSync(destCreds)) {
       for (const name of entries) {
         if (name.startsWith("candidato_")) continue;
         const from = path.join(root, name);
@@ -87,24 +118,22 @@ function resolverPastaAuthBaileys(candidatoId) {
           continue;
         }
         if (st.isFile() || st.isDirectory()) {
-          fs.renameSync(from, path.join(dest, name));
+          const to = path.join(dest, name);
+          if (!fs.existsSync(to)) {
+            fs.renameSync(from, to);
+          }
         }
       }
-      return dest;
     }
   }
 
-  fs.mkdirSync(dest, { recursive: true });
   return dest;
 }
 
-/**
- * Remove arquivos de sessão salvos localmente para forçar pareamento com um novo número.
- */
-function limparArquivosAuthCandidato(candidatoId) {
+function limparArquivosAuthCanal(candidatoId, canalId) {
   let folder;
   try {
-    folder = resolverPastaAuthBaileys(candidatoId);
+    folder = resolverPastaAuthBaileys(candidatoId, canalId);
   } catch {
     return;
   }
@@ -120,23 +149,26 @@ function limparArquivosAuthCandidato(candidatoId) {
     try {
       fs.rmSync(p, { recursive: true, force: true });
     } catch {
-      /* ignora arquivo bloqueado ou já removido */
+      /* ignora */
     }
   }
 }
 
-class WhatsappPorCandidato {
-  constructor(candidatoId) {
+class WhatsappPorCanal {
+  constructor(canalId, candidatoId, nomeCanal = "Canal") {
+    this.canalId = Number(canalId);
     this.candidatoId = Number(candidatoId);
+    this.nomeCanal = String(nomeCanal || "Canal").trim() || "Canal";
     this.sock = null;
     this.conectando = false;
     this.estado = {
       conectado: false,
       status: "desconectado",
       numero: null,
-      nomePerfil: null,
+      nomePerfil: this.nomeCanal,
       qrCode: null,
       candidato_id: this.candidatoId,
+      whatsapp_canal_id: this.canalId,
       ultimaAtualizacao: new Date().toISOString(),
     };
   }
@@ -145,29 +177,36 @@ class WhatsappPorCandidato {
     return { ...this.estado };
   }
 
-  atualizarEstado(parcial) {
+  async atualizarEstado(parcial) {
     this.estado = {
       ...this.estado,
       ...parcial,
       candidato_id: this.candidatoId,
+      whatsapp_canal_id: this.canalId,
       ultimaAtualizacao: new Date().toISOString(),
     };
+    try {
+      await persistirEstadoCanal(this.canalId, this.estado);
+    } catch (err) {
+      console.error("[whatsapp-baileys] Falha ao persistir canal:", err?.message || err);
+    }
   }
 
-  async connect(nomePerfil = "Canal principal") {
+  async connect(nomePerfil) {
+    const perfil = String(nomePerfil || this.nomeCanal || "Canal").trim() || this.nomeCanal;
     if (this.sock || this.conectando) {
       return this.getStatus();
     }
 
     this.conectando = true;
-    this.atualizarEstado({
+    await this.atualizarEstado({
       status: "conectando",
       conectado: false,
-      nomePerfil,
+      nomePerfil: perfil,
       qrCode: null,
     });
 
-    const authFolder = resolverPastaAuthBaileys(this.candidatoId);
+    const authFolder = resolverPastaAuthBaileys(this.candidatoId, this.canalId);
     const { state, saveCreds } = await useMultiFileAuthState(authFolder);
     const { version } = await fetchLatestBaileysVersion();
 
@@ -179,14 +218,14 @@ class WhatsappPorCandidato {
     });
 
     socket.ev.on("creds.update", saveCreds);
-    anexarCapturaRespostas(socket, this.candidatoId);
+    anexarCapturaRespostas(socket, this.candidatoId, this.canalId);
 
     socket.ev.on("connection.update", async (update) => {
       const { connection, qr, lastDisconnect } = update;
 
       if (qr) {
         const qrCode = await QRCode.toDataURL(qr);
-        this.atualizarEstado({
+        await this.atualizarEstado({
           status: "aguardando_qr",
           conectado: false,
           qrCode,
@@ -195,10 +234,10 @@ class WhatsappPorCandidato {
 
       if (connection === "open") {
         const user = socket.user?.id ? String(socket.user.id).split(":")[0] : null;
-        this.atualizarEstado({
+        await this.atualizarEstado({
           status: "conectado",
           conectado: true,
-          numero: user,
+          numero: formatarNumeroCanal(user) || user,
           qrCode: null,
         });
         this.conectando = false;
@@ -209,14 +248,14 @@ class WhatsappPorCandidato {
         const loggedOut = reason === DisconnectReason.loggedOut;
         this.sock = null;
         this.conectando = false;
-        this.atualizarEstado({
+        await this.atualizarEstado({
           status: loggedOut ? "desconectado" : "reconectando",
           conectado: false,
           numero: null,
         });
 
         if (!loggedOut) {
-          await this.connect(this.estado.nomePerfil || nomePerfil);
+          await this.connect(this.estado.nomePerfil || perfil);
         }
       }
     });
@@ -232,23 +271,19 @@ class WhatsappPorCandidato {
       this.sock = null;
     }
     this.conectando = false;
-    this.atualizarEstado({
+    await this.atualizarEstado({
       conectado: false,
       status: "desconectado",
       numero: null,
       qrCode: null,
-      nomePerfil: null,
     });
     return this.getStatus();
   }
 
-  /**
-   * Encerra a sessão atual, apaga credenciais locais e abre fluxo de QR para um novo telefone.
-   */
-  async trocarTelefone(nomePerfil = "Canal principal") {
+  async trocarTelefone(nomePerfil) {
     await this.disconnect();
-    limparArquivosAuthCandidato(this.candidatoId);
-    return this.connect(nomePerfil);
+    limparArquivosAuthCanal(this.candidatoId, this.canalId);
+    return this.connect(nomePerfil || this.nomeCanal);
   }
 
   async sendText(numero, mensagem) {
@@ -289,8 +324,16 @@ class WhatsappPorCandidato {
 
 class WhatsappBaileysManager {
   constructor() {
-    /** @type {Map<number, WhatsappPorCandidato>} */
+    /** @type {Map<number, WhatsappPorCanal>} */
     this.instances = new Map();
+  }
+
+  parseCanalId(raw) {
+    const id = Number(raw);
+    if (!Number.isInteger(id) || id <= 0) {
+      throw new Error("whatsapp_canal_id invalido.");
+    }
+    return id;
   }
 
   parseCandidatoId(raw) {
@@ -301,33 +344,33 @@ class WhatsappBaileysManager {
     return id;
   }
 
-  getOrCreate(candidatoId) {
-    const id = this.parseCandidatoId(candidatoId);
-    if (!this.instances.has(id)) {
-      this.instances.set(id, new WhatsappPorCandidato(id));
+  getOrCreate(canalId, candidatoId, nomeCanal) {
+    const kid = this.parseCanalId(canalId);
+    const cid = this.parseCandidatoId(candidatoId);
+    if (!this.instances.has(kid)) {
+      this.instances.set(kid, new WhatsappPorCanal(kid, cid, nomeCanal));
     }
-    return this.instances.get(id);
+    return this.instances.get(kid);
   }
 
-  getStatus(candidatoId) {
-    const id = this.parseCandidatoId(candidatoId);
-    return this.getOrCreate(id).getStatus();
+  getStatusByCanalId(canalId, candidatoId, nomeCanal) {
+    return this.getOrCreate(canalId, candidatoId, nomeCanal).getStatus();
   }
 
-  async connect(candidatoId, nomePerfil) {
-    return this.getOrCreate(candidatoId).connect(nomePerfil);
+  async connect(canalId, candidatoId, nomePerfil, nomeCanal) {
+    return this.getOrCreate(canalId, candidatoId, nomeCanal).connect(nomePerfil);
   }
 
-  async disconnect(candidatoId) {
-    return this.getOrCreate(candidatoId).disconnect();
+  async disconnect(canalId, candidatoId, nomeCanal) {
+    return this.getOrCreate(canalId, candidatoId, nomeCanal).disconnect();
   }
 
-  async trocarTelefone(candidatoId, nomePerfil) {
-    return this.getOrCreate(candidatoId).trocarTelefone(nomePerfil);
+  async trocarTelefone(canalId, candidatoId, nomePerfil, nomeCanal) {
+    return this.getOrCreate(canalId, candidatoId, nomeCanal).trocarTelefone(nomePerfil);
   }
 
-  async sendText(candidatoId, numero, mensagem) {
-    return this.getOrCreate(candidatoId).sendText(numero, mensagem);
+  async sendText(canalId, candidatoId, numero, mensagem, nomeCanal) {
+    return this.getOrCreate(canalId, candidatoId, nomeCanal).sendText(numero, mensagem);
   }
 
   normalizarNumeroBrasil(numero) {

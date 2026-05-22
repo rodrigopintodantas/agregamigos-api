@@ -44,6 +44,11 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
         field: "candidato_id",
       },
+      whatsapp_canal_id: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+        field: "whatsapp_canal_id",
+      },
     },
     {
       freezeTableName: true,
@@ -65,6 +70,11 @@ module.exports = (sequelize, DataTypes) => {
     });
     CampanhaDivulgacaoModel.belongsTo(models.CandidatoModel, {
       foreignKey: { name: "candidatoId", field: "candidato_id" },
+      onDelete: "RESTRICT",
+      onUpdate: "CASCADE",
+    });
+    CampanhaDivulgacaoModel.belongsTo(models.WhatsappCanalModel, {
+      foreignKey: { name: "whatsapp_canal_id", field: "whatsapp_canal_id" },
       onDelete: "RESTRICT",
       onUpdate: "CASCADE",
     });

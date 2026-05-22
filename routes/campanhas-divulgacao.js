@@ -7,6 +7,7 @@ const {
   EnderecoModel,
   UsuarioModel,
   ModeloMensagemModel,
+  WhatsappCanalModel,
 } = require("../models");
 const { authorize, authBearerCandidatoObrigatorio } = require("../auth/authorize");
 const whatsappService = require("../services/whatsapp-baileys");
@@ -151,6 +152,13 @@ router.get("/", ...apenasAdmin, async (req, res, next) => {
   try {
     const campanhas = await CampanhaDivulgacaoModel.findAll({
       where: { candidatoId: req.auth.CandidatoId },
+      include: [
+        {
+          model: WhatsappCanalModel,
+          attributes: ["id", "nome", "numero", "status"],
+          required: false,
+        },
+      ],
       order: [
         ["createdAt", "DESC"],
         ["id", "DESC"],
@@ -198,11 +206,21 @@ router.get("/", ...apenasAdmin, async (req, res, next) => {
     return res.json(
       campanhas.map((c) => {
         const agg = map.get(c.id) || { total: 0, enviados: 0, pendentes: 0 };
+        const canal = c.WhatsappCanalModel;
         return {
           id: c.id,
           nome: c.nome,
           status: c.status,
           mensagens_por_turno: c.mensagens_por_turno ?? 2,
+          whatsapp_canal_id: c.whatsapp_canal_id ?? null,
+          whatsapp_canal: canal
+            ? {
+                id: canal.id,
+                nome: canal.nome,
+                numero: canal.numero,
+                status: canal.status,
+              }
+            : null,
           total_destinatarios: c.total_destinatarios ?? agg.total,
           total_enviados: c.total_enviados ?? agg.enviados,
           total_pendentes: agg.pendentes,
@@ -225,6 +243,13 @@ router.get("/:id", ...apenasAdmin, async (req, res, next) => {
 
     const campanha = await CampanhaDivulgacaoModel.findOne({
       where: { id, candidatoId: req.auth.CandidatoId },
+      include: [
+        {
+          model: WhatsappCanalModel,
+          attributes: ["id", "nome", "numero", "status"],
+          required: false,
+        },
+      ],
     });
     if (!campanha) return res.status(404).json({ message: "Campanha nao encontrada." });
     res.set("Cache-Control", "no-store, no-cache, must-revalidate");
@@ -246,11 +271,21 @@ router.get("/:id", ...apenasAdmin, async (req, res, next) => {
       order: [["ordem", "ASC"]],
     });
 
+    const canal = campanha.WhatsappCanalModel;
     return res.json({
       id: campanha.id,
       nome: campanha.nome,
       status: campanha.status,
       mensagens_por_turno: campanha.mensagens_por_turno ?? 2,
+      whatsapp_canal_id: campanha.whatsapp_canal_id ?? null,
+      whatsapp_canal: canal
+        ? {
+            id: canal.id,
+            nome: canal.nome,
+            numero: canal.numero,
+            status: canal.status,
+          }
+        : null,
       total_destinatarios: campanha.total_destinatarios,
       total_enviados: campanha.total_enviados,
       createdAt: campanha.createdAt,
@@ -306,11 +341,23 @@ router.post("/", ...apenasAdmin, async (req, res, next) => {
     const mensagensPorTurno = Number.isInteger(mensagensPorTurnoRaw)
       ? Math.max(1, Math.min(50, mensagensPorTurnoRaw))
       : 2;
+    const whatsappCanalId = Number(req.body?.whatsapp_canal_id);
 
     const pessoaIdsValidos = [...new Set(pessoaIds.filter((id) => Number.isInteger(id) && id > 0))];
     const modeloIdsValidos = [...new Set(modeloIds.filter((id) => Number.isInteger(id) && id > 0))];
 
     if (!nome) return res.status(400).json({ message: "Informe o nome da campanha." });
+    if (!Number.isInteger(whatsappCanalId) || whatsappCanalId <= 0) {
+      return res.status(400).json({ message: "Selecione o celular (canal WhatsApp) que enviara a campanha." });
+    }
+
+    const canalWhatsapp = await WhatsappCanalModel.findOne({
+      where: { id: whatsappCanalId, candidatoId: req.auth.CandidatoId },
+    });
+    if (!canalWhatsapp) {
+      return res.status(400).json({ message: "Canal WhatsApp selecionado nao encontrado." });
+    }
+
     if (!pessoaIdsValidos.length)
       return res.status(400).json({ message: "Selecione pelo menos uma pessoa." });
     if (modeloIdsValidos.length < 2) {
@@ -355,6 +402,7 @@ router.post("/", ...apenasAdmin, async (req, res, next) => {
           mensagens_por_turno: mensagensPorTurno,
           usuario_id: req.auth?.UsuarioId ?? null,
           candidatoId: req.auth.CandidatoId,
+          whatsapp_canal_id: canalWhatsapp.id,
         },
         { transaction },
       );
@@ -441,10 +489,22 @@ router.post("/:id/iniciar", ...apenasAdmin, async (req, res, next) => {
     if (String(campanha.status) === "cancelada") {
       return res.status(400).json({ message: "Campanha cancelada nao pode ser iniciada." });
     }
-    const wpp = whatsappService.getStatus(req.auth.CandidatoId);
+    const canalId = Number(campanha.whatsapp_canal_id);
+    if (!Number.isInteger(canalId) || canalId <= 0) {
+      return res.status(400).json({
+        message: "Campanha sem canal WhatsApp definido. Recrie a campanha selecionando um celular.",
+      });
+    }
+    const canalRow = await WhatsappCanalModel.findOne({
+      where: { id: canalId, candidatoId: req.auth.CandidatoId },
+    });
+    if (!canalRow) {
+      return res.status(400).json({ message: "Canal WhatsApp da campanha nao encontrado." });
+    }
+    const wpp = whatsappService.getStatusByCanalId(canalId, req.auth.CandidatoId, canalRow.nome);
     if (!wpp.conectado) {
       return res.status(400).json({
-        message: "Canal WhatsApp desconectado. Conecte o Baileys antes de iniciar a campanha.",
+        message: `O celular "${canalRow.nome}" nao esta conectado. Conecte-o em Conexao WhatsApp antes de iniciar.`,
       });
     }
 
@@ -504,6 +564,29 @@ router.post("/:id/reprocessar-erros", ...apenasAdmin, async (req, res, next) => 
         id,
         status: campanha.status,
         message: "Nao ha destinatarios com erro para reprocessar.",
+      });
+    }
+
+    const canalIdReproc = Number(campanha.whatsapp_canal_id);
+    if (!Number.isInteger(canalIdReproc) || canalIdReproc <= 0) {
+      return res.status(400).json({
+        message: "Campanha sem canal WhatsApp definido. Recrie a campanha selecionando um celular.",
+      });
+    }
+    const canalReproc = await WhatsappCanalModel.findOne({
+      where: { id: canalIdReproc, candidatoId: req.auth.CandidatoId },
+    });
+    if (!canalReproc) {
+      return res.status(400).json({ message: "Canal WhatsApp da campanha nao encontrado." });
+    }
+    const wppReproc = whatsappService.getStatusByCanalId(
+      canalIdReproc,
+      req.auth.CandidatoId,
+      canalReproc.nome,
+    );
+    if (!wppReproc.conectado) {
+      return res.status(400).json({
+        message: `O celular "${canalReproc.nome}" nao esta conectado. Conecte-o antes de reprocessar.`,
       });
     }
 
