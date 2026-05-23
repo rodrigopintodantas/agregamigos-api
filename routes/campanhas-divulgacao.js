@@ -15,6 +15,7 @@ const {
   enfileirarDestinatarios,
   validarFilaDisponivel,
   removerJobsPendentesDaCampanha,
+  removerTodosJobsDaCampanha,
 } = require("../queues/campanha-envio-queue");
 const {
   mesmoDiaEmFusoCampanha,
@@ -445,6 +446,13 @@ router.delete("/:id", ...apenasAdmin, async (req, res, next) => {
       return res.status(400).json({ message: "ID invalido." });
     }
 
+    const loginExcluir = String(req.auth.preferred_username ?? "").trim().toLowerCase();
+    if (loginExcluir !== "admin") {
+      return res.status(403).json({
+        message: "Apenas o usuario com login admin pode excluir campanhas.",
+      });
+    }
+
     const campanha = await CampanhaDivulgacaoModel.findOne({
       where: { id, candidatoId: req.auth.CandidatoId },
     });
@@ -452,14 +460,25 @@ router.delete("/:id", ...apenasAdmin, async (req, res, next) => {
       return res.status(404).json({ message: "Campanha nao encontrada." });
     }
 
-    if (String(campanha.status) !== "montada") {
+    if (String(campanha.status) === "em_andamento") {
       return res.status(400).json({
-        message: "A campanha so pode ser excluida quando estiver no status Montada.",
+        message: "Campanhas em andamento nao podem ser excluidas. Cancele o envio antes.",
       });
     }
 
-    await campanha.destroy();
-    return res.status(200).json({ message: "Campanha excluida com sucesso." });
+    const jobsRemovidos = await removerTodosJobsDaCampanha(id);
+
+    await sequelize.transaction(async (transaction) => {
+      await CampanhaDestinatarioModel.destroy({
+        where: { campanha_id: id },
+        transaction,
+      });
+      await campanha.destroy({ transaction });
+    });
+
+    return res.status(200).json({
+      message: `Campanha excluida com sucesso (${jobsRemovidos} job(s) removido(s) da fila).`,
+    });
   } catch (err) {
     next(err);
   }

@@ -92,15 +92,15 @@ async function enfileirarDestinatarios(destinatarios) {
   );
 }
 
-async function removerJobsPendentesDaCampanha(campanhaId) {
+async function removerJobsDaCampanha(campanhaId, estados) {
   const campanhaIdNumero = Number(campanhaId);
   if (!Number.isInteger(campanhaIdNumero) || campanhaIdNumero <= 0) return 0;
 
-  const estados = ["wait", "paused", "delayed", "prioritized", "waiting-children"];
+  const listaEstados = Array.isArray(estados) && estados.length ? estados : [];
   const vistos = new Set();
   let totalRemovidos = 0;
 
-  for (const estado of estados) {
+  for (const estado of listaEstados) {
     const jobs = await campanhaEnvioQueue.getJobs([estado], 0, -1, true);
     for (const job of jobs) {
       if (!job || vistos.has(job.id)) continue;
@@ -114,6 +114,30 @@ async function removerJobsPendentesDaCampanha(campanhaId) {
   return totalRemovidos;
 }
 
+async function removerJobsPendentesDaCampanha(campanhaId) {
+  return removerJobsDaCampanha(campanhaId, [
+    "wait",
+    "paused",
+    "delayed",
+    "prioritized",
+    "waiting-children",
+  ]);
+}
+
+/** Remove jobs da fila antes de excluir a campanha (inclui envios em curso na fila). */
+async function removerTodosJobsDaCampanha(campanhaId) {
+  return removerJobsDaCampanha(campanhaId, [
+    "wait",
+    "paused",
+    "delayed",
+    "prioritized",
+    "waiting-children",
+    "active",
+    "completed",
+    "failed",
+  ]);
+}
+
 module.exports = {
   QUEUE_NAME,
   redisConnection,
@@ -121,4 +145,5 @@ module.exports = {
   validarFilaDisponivel,
   enfileirarDestinatarios,
   removerJobsPendentesDaCampanha,
+  removerTodosJobsDaCampanha,
 };
