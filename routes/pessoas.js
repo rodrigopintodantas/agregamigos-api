@@ -1,6 +1,6 @@
 const crypto = require("crypto");
 const express = require("express");
-const { QueryTypes } = require("sequelize");
+const { QueryTypes, Op } = require("sequelize");
 const { sequelize, PessoaModel, EnderecoModel, ConsentimentoLgpdModel, CandidatoModel, UsuarioCandidatoModel, UsuarioModel, PapelModel } = require("../models");
 const { authBearerCandidatoObrigatorio } = require("../auth/authorize");
 
@@ -15,6 +15,17 @@ function ehCoordenador(req) {
   return String(req.auth?.PapelNome ?? "") === "Coordenador";
 }
 
+function ehLoginAdminSistema(req) {
+  return String(req.auth?.preferred_username ?? "").trim().toLowerCase() === "admin";
+}
+
+const ENGAJAMENTOS_WHATSAPP_VALIDOS = new Set(["sem_resposta", "positivo", "negativo", "neutro"]);
+
+function normalizarEngajamentoWhatsapp(value) {
+  const v = String(value ?? "").trim().toLowerCase();
+  return ENGAJAMENTOS_WHATSAPP_VALIDOS.has(v) ? v : null;
+}
+
 function wherePessoasListagem(req) {
   const base = { candidatoId: req.auth.CandidatoId };
   if (ehCoordenador(req)) {
@@ -25,6 +36,51 @@ function wherePessoasListagem(req) {
 
 function limparNumeros(value) {
   return value != null ? String(value).replace(/\D/g, "") : "";
+}
+
+/** Dígitos comparáveis para evitar duplicar WhatsApp no mesmo candidato (CSV e base). */
+function normalizarWhatsappComparacao(value) {
+  let digits = limparNumeros(value);
+  if (!digits) return "";
+
+  digits = digits.replace(/^00+/, "").replace(/^0+/, "");
+
+  const comOperadora = digits.match(/^0\d{2}(\d{10,11})$/);
+  if (comOperadora?.[1]) {
+    digits = comOperadora[1];
+  }
+
+  if ((digits.length === 10 || digits.length === 11) && !digits.startsWith("55")) {
+    digits = `55${digits}`;
+  }
+
+  return digits.slice(0, 20);
+}
+
+async function buscarPessoaPorWhatsappDuplicado(candidatoId, whatsapp, excludePessoaId = null) {
+  const whatsappNorm = normalizarWhatsappComparacao(whatsapp);
+  if (!whatsappNorm) return null;
+
+  const pessoas = await PessoaModel.findAll({
+    attributes: ["id", "nome", "whatsapp"],
+    where: { candidatoId },
+  });
+
+  for (const pessoa of pessoas) {
+    if (excludePessoaId != null && Number(pessoa.id) === Number(excludePessoaId)) continue;
+    if (normalizarWhatsappComparacao(pessoa.whatsapp) === whatsappNorm) {
+      return pessoa;
+    }
+  }
+  return null;
+}
+
+function mensagemWhatsappDuplicado(pessoaExistente) {
+  const nome = pessoaExistente?.nome ? String(pessoaExistente.nome).trim() : "";
+  if (nome) {
+    return `Este WhatsApp já está cadastrado para ${nome}.`;
+  }
+  return "Este WhatsApp já está cadastrado.";
 }
 
 function normalizarTexto(value) {
@@ -105,6 +161,51 @@ function obterCampoEmail(rowMap, rawRow) {
   }
 
   return null;
+}
+
+function obterCampoTelefone(rowMap, rawRow) {
+  const direto = obterCampo(rowMap, [
+    "Telefone com DDD (preferencialmente Whatsapp):",
+    "Telefone com DDD (preferencialmente Whatsapp)",
+    "Telefone com DDD",
+    "Telefone com ddd",
+    "Whatsapp",
+    "WhatsApp",
+    "Whats App",
+    "Celular",
+    "Telefone",
+    "Telefone celular",
+    "Numero de telefone",
+    "Número de telefone",
+    "Fone",
+  ]);
+  if (direto != null && String(direto).trim() !== "") return direto;
+
+  if (rawRow && typeof rawRow === "object") {
+    for (const [key, value] of Object.entries(rawRow)) {
+      const norm = normalizarTexto(key);
+      if (colunaPareceTelefone(norm) && value != null && String(value).trim() !== "") {
+        return value;
+      }
+    }
+  }
+
+  const keys = Object.keys(rowMap);
+  const telefoneKey = keys.find((key) => colunaPareceTelefone(key));
+  if (telefoneKey) return rowMap[telefoneKey];
+
+  return null;
+}
+
+function colunaPareceTelefone(keyNormalizado) {
+  if (!keyNormalizado) return false;
+  if (keyNormalizado.includes("instagram")) return false;
+  if (keyNormalizado.includes("email") || keyNormalizado.includes("e mail")) return false;
+  if (keyNormalizado.includes("endereco") && keyNormalizado.includes("mail")) return false;
+  if (keyNormalizado.includes("telefone") || keyNormalizado.includes("whatsapp")) return true;
+  if (keyNormalizado.includes("celular") || keyNormalizado === "fone") return true;
+  if (keyNormalizado.includes("fone") && !keyNormalizado.includes("microfone")) return true;
+  return false;
 }
 
 function parseDateTime(value) {
@@ -347,6 +448,11 @@ router.post("/link-cadastro/:slugPublico", async (req, res, next) => {
     const cep = limparNumeros(endereco.cep || "").slice(0, 8);
     const uf = endereco.uf != null ? String(endereco.uf).trim().toUpperCase().slice(0, 2) : null;
 
+    const duplicataWhatsapp = await buscarPessoaPorWhatsappDuplicado(candidato.id, whatsapp);
+    if (duplicataWhatsapp) {
+      return res.status(409).json({ message: mensagemWhatsappDuplicado(duplicataWhatsapp) });
+    }
+
     const created = await sequelize.transaction(async (transaction) => {
       const pessoa = await PessoaModel.create(
         {
@@ -519,6 +625,11 @@ router.post("/", authBearerCandidatoObrigatorio(), async (req, res, next) => {
     const cep = limparNumeros(endereco.cep || "").slice(0, 8);
     const uf = endereco.uf != null ? String(endereco.uf).trim().toUpperCase().slice(0, 2) : null;
 
+    const duplicataWhatsapp = await buscarPessoaPorWhatsappDuplicado(req.auth.CandidatoId, whatsapp);
+    if (duplicataWhatsapp) {
+      return res.status(409).json({ message: mensagemWhatsappDuplicado(duplicataWhatsapp) });
+    }
+
     const created = await sequelize.transaction(async (transaction) => {
       const pessoa = await PessoaModel.create(
         {
@@ -583,9 +694,7 @@ router.post("/importar-csv", authBearerCandidatoObrigatorio(), async (req, res, 
         const email = String(obterCampoEmail(rowMap, row) ?? "")
           .trim()
           .toLowerCase();
-        const whatsapp = limparNumeros(
-          obterCampo(rowMap, ["Telefone com DDD (preferencialmente Whatsapp):", "Telefone com DDD", "Whatsapp"]) ?? "",
-        ).slice(0, 20);
+        const whatsapp = limparNumeros(obterCampoTelefone(rowMap, row) ?? "").slice(0, 20);
         const dataNascimento = parseDateOnly(
           obterCampo(rowMap, ["Data de Nascimento:", "Data de Nascimento"]),
         );
@@ -625,36 +734,72 @@ router.post("/importar-csv", authBearerCandidatoObrigatorio(), async (req, res, 
     }
 
     const pessoasExistentes = await PessoaModel.findAll({
-      attributes: ["nome"],
+      attributes: ["nome", "whatsapp"],
       where: { candidatoId: req.auth.CandidatoId },
     });
-    const nomesNormalizadosExistentes = new Set(
-      pessoasExistentes
-        .map((pessoa) => normalizarTexto(pessoa.nome))
-        .filter((nome) => nome.length > 0),
-    );
+
+    const nomesNormalizadosExistentes = new Set();
+    /** @type {Map<string, string>} whatsapp normalizado → nome já cadastrado */
+    const whatsappsNormalizadosExistentes = new Map();
+
+    for (const pessoa of pessoasExistentes) {
+      const nomeNorm = normalizarTexto(pessoa.nome);
+      if (nomeNorm) nomesNormalizadosExistentes.add(nomeNorm);
+
+      const whatsappNorm = normalizarWhatsappComparacao(pessoa.whatsapp);
+      if (whatsappNorm && !whatsappsNormalizadosExistentes.has(whatsappNorm)) {
+        whatsappsNormalizadosExistentes.set(whatsappNorm, String(pessoa.nome || "").trim());
+      }
+    }
 
     const payloadSemDuplicados = [];
     let duplicadosIgnorados = 0;
     const nomesDuplicados = [];
+    const registrosNaoImportados = [];
+
     for (const item of payload) {
       const nomeNormalizado = normalizarTexto(item.nome);
       if (!nomeNormalizado || nomesNormalizadosExistentes.has(nomeNormalizado)) {
         duplicadosIgnorados += 1;
         nomesDuplicados.push(item.nome);
+        registrosNaoImportados.push({
+          nome: item.nome,
+          whatsapp: item.whatsapp || null,
+          motivo: "nome_duplicado",
+          cadastro_existente: null,
+        });
+        continue;
+      }
+
+      const whatsappNorm = normalizarWhatsappComparacao(item.whatsapp);
+      if (whatsappNorm && whatsappsNormalizadosExistentes.has(whatsappNorm)) {
+        duplicadosIgnorados += 1;
+        registrosNaoImportados.push({
+          nome: item.nome,
+          whatsapp: item.whatsapp || null,
+          motivo: "whatsapp_duplicado",
+          cadastro_existente: whatsappsNormalizadosExistentes.get(whatsappNorm) || null,
+        });
         continue;
       }
 
       nomesNormalizadosExistentes.add(nomeNormalizado);
+      if (whatsappNorm) {
+        whatsappsNormalizadosExistentes.set(whatsappNorm, item.nome);
+      }
       payloadSemDuplicados.push(item);
     }
 
     if (!payloadSemDuplicados.length) {
       return res.status(400).json({
-        message: "Nenhum registro novo para importar. Todos os nomes já existem.",
+        message:
+          "Nenhum registro novo para importar. Todos os registros já existem (nome ou WhatsApp repetido).",
+        registros_nao_importados: registrosNaoImportados,
+        nomes_duplicados: nomesDuplicados,
       });
     }
 
+    const idsImportados = [];
     await sequelize.transaction(async (transaction) => {
       for (const item of payloadSemDuplicados) {
         const pessoa = await PessoaModel.create(
@@ -670,6 +815,7 @@ router.post("/importar-csv", authBearerCandidatoObrigatorio(), async (req, res, 
           },
           { transaction },
         );
+        idsImportados.push(pessoa.id);
 
         await EnderecoModel.create(
           {
@@ -682,15 +828,166 @@ router.post("/importar-csv", authBearerCandidatoObrigatorio(), async (req, res, 
       }
     });
 
+    const semWhatsapp = payloadSemDuplicados.filter((item) => !item.whatsapp).length;
     const sufixoIgnorados =
       duplicadosIgnorados > 0 ? ` ${duplicadosIgnorados} duplicado(s) ignorado(s).` : "";
+    const sufixoSemTelefone =
+      semWhatsapp > 0
+        ? ` Atenção: ${semWhatsapp} registro(s) ficaram sem telefone (coluna não encontrada ou vazia no CSV).`
+        : "";
 
     return res.status(201).json({
-      message: `${payloadSemDuplicados.length} registro(s) importado(s) com sucesso.${sufixoIgnorados}`,
+      message: `${payloadSemDuplicados.length} registro(s) importado(s) com sucesso.${sufixoIgnorados}${sufixoSemTelefone}`,
       total: payloadSemDuplicados.length,
       nomes_duplicados: nomesDuplicados,
+      registros_nao_importados: registrosNaoImportados,
+      ids_importados: idsImportados,
+      sem_whatsapp: semWhatsapp,
     });
   } catch (err) {
+    next(err);
+  }
+});
+
+function minutosDesfazerRecentes(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 120;
+  return Math.min(Math.max(Math.round(n), 5), 24 * 60);
+}
+
+router.get("/importar-csv/desfazer-recentes/preview", authBearerCandidatoObrigatorio(), async (req, res, next) => {
+  try {
+    if (!ehLoginAdminSistema(req)) {
+      return res.status(403).json({ message: "Apenas o usuário com login admin pode desfazer importações." });
+    }
+    if (ehCoordenador(req)) {
+      return res.status(403).json({ message: "Operação reservada ao administrador." });
+    }
+
+    const minutos = minutosDesfazerRecentes(req.query?.minutos);
+    const desde = new Date(Date.now() - minutos * 60 * 1000);
+    const pessoas = await PessoaModel.findAll({
+      attributes: ["id", "nome", "createdAt"],
+      where: {
+        candidatoId: req.auth.CandidatoId,
+        createdAt: { [Op.gte]: desde },
+      },
+      order: [["createdAt", "DESC"]],
+      limit: 5000,
+    });
+
+    return res.json({
+      minutos,
+      total: pessoas.length,
+      nomes_amostra: pessoas.slice(0, 15).map((p) => String(p.nome || "").trim()),
+      ids: pessoas.map((p) => p.id),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/importar-csv/desfazer-recentes", authBearerCandidatoObrigatorio(), async (req, res, next) => {
+  try {
+    if (!ehLoginAdminSistema(req)) {
+      return res.status(403).json({ message: "Apenas o usuário com login admin pode desfazer importações." });
+    }
+    if (ehCoordenador(req)) {
+      return res.status(403).json({ message: "Operação reservada ao administrador." });
+    }
+
+    const minutos = minutosDesfazerRecentes(req.body?.minutos);
+    const desde = new Date(Date.now() - minutos * 60 * 1000);
+    const pessoas = await PessoaModel.findAll({
+      attributes: ["id"],
+      where: {
+        candidatoId: req.auth.CandidatoId,
+        createdAt: { [Op.gte]: desde },
+      },
+      limit: 5000,
+    });
+    const idsValidos = pessoas.map((p) => p.id);
+
+    if (!idsValidos.length) {
+      return res.status(404).json({
+        message: `Nenhum cadastro criado nos últimos ${minutos} minuto(s) para desfazer.`,
+      });
+    }
+
+    const removidos = await sequelize.transaction(async (transaction) => {
+      return PessoaModel.destroy({
+        where: { id: idsValidos, candidatoId: req.auth.CandidatoId },
+        transaction,
+      });
+    });
+
+    return res.json({
+      message: `${removidos} cadastro(s) criado(s) nos últimos ${minutos} minuto(s) foram removido(s).`,
+      removidos,
+      ids_removidos: idsValidos,
+      minutos,
+    });
+  } catch (err) {
+    if (err?.name === "SequelizeForeignKeyConstraintError") {
+      return res.status(409).json({
+        message:
+          "Não foi possível desfazer: algum cadastro já está vinculado a campanha ou outro registro.",
+      });
+    }
+    next(err);
+  }
+});
+
+router.post("/importar-csv/desfazer", authBearerCandidatoObrigatorio(), async (req, res, next) => {
+  try {
+    if (!ehLoginAdminSistema(req)) {
+      return res.status(403).json({ message: "Apenas o usuário com login admin pode desfazer importações." });
+    }
+    if (ehCoordenador(req)) {
+      return res.status(403).json({ message: "Operação reservada ao administrador." });
+    }
+
+    const idsRaw = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    const ids = [...new Set(idsRaw.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))];
+    if (!ids.length) {
+      return res.status(400).json({ message: "Informe os IDs da importação a desfazer." });
+    }
+
+    const pessoas = await PessoaModel.findAll({
+      attributes: ["id"],
+      where: { id: ids, candidatoId: req.auth.CandidatoId },
+    });
+    const idsValidos = pessoas.map((p) => p.id);
+    const idsIgnorados = ids.filter((id) => !idsValidos.includes(id));
+
+    if (!idsValidos.length) {
+      return res.status(404).json({
+        message: "Nenhum registro desta importação foi encontrado para desfazer.",
+      });
+    }
+
+    const removidos = await sequelize.transaction(async (transaction) => {
+      return PessoaModel.destroy({
+        where: { id: idsValidos, candidatoId: req.auth.CandidatoId },
+        transaction,
+      });
+    });
+
+    const sufixoIgnorados =
+      idsIgnorados.length > 0 ? ` ${idsIgnorados.length} ID(s) ignorado(s) (não pertencem a este candidato).` : "";
+
+    return res.json({
+      message: `${removidos} registro(s) removido(s). Você pode importar o CSV novamente.${sufixoIgnorados}`,
+      removidos,
+      ids_removidos: idsValidos,
+    });
+  } catch (err) {
+    if (err?.name === "SequelizeForeignKeyConstraintError") {
+      return res.status(409).json({
+        message:
+          "Não foi possível desfazer: algum cadastro já está vinculado a campanha ou outro registro. Exclua manualmente o que for necessário.",
+      });
+    }
     next(err);
   }
 });
@@ -715,6 +1012,7 @@ router.put("/:id", authBearerCandidatoObrigatorio(), async (req, res, next) => {
     const instagram = req.body?.instagram != null ? String(req.body.instagram).trim() : "";
     const indicacao = req.body?.indicacao != null ? String(req.body.indicacao).trim() : "";
     const endereco = req.body?.endereco ?? {};
+    const engajamentoNorm = normalizarEngajamentoWhatsapp(req.body?.engajamento_whatsapp);
 
     if (nome.length < 3) {
       return res.status(400).json({ message: "Informe nome com pelo menos 3 caracteres." });
@@ -725,9 +1023,23 @@ router.put("/:id", authBearerCandidatoObrigatorio(), async (req, res, next) => {
     if (dataNascimento && !/^\d{4}-\d{2}-\d{2}$/.test(dataNascimento)) {
       return res.status(400).json({ message: "Data de nascimento inválida." });
     }
+    if (req.body?.engajamento_whatsapp != null && String(req.body.engajamento_whatsapp).trim() && !engajamentoNorm) {
+      return res.status(400).json({
+        message: "Engajamento inválido. Use: sem_resposta, positivo, negativo ou neutro.",
+      });
+    }
 
     const cep = limparNumeros(endereco.cep || "").slice(0, 8);
     const uf = endereco.uf != null ? String(endereco.uf).trim().toUpperCase().slice(0, 2) : null;
+
+    const duplicataWhatsapp = await buscarPessoaPorWhatsappDuplicado(
+      req.auth.CandidatoId,
+      whatsapp,
+      id,
+    );
+    if (duplicataWhatsapp) {
+      return res.status(409).json({ message: mensagemWhatsappDuplicado(duplicataWhatsapp) });
+    }
 
     const updated = await sequelize.transaction(async (transaction) => {
       const pessoa = await PessoaModel.findOne({
@@ -736,17 +1048,19 @@ router.put("/:id", authBearerCandidatoObrigatorio(), async (req, res, next) => {
       });
       if (!pessoa) return null;
 
-      await pessoa.update(
-        {
-          nome,
-          dataNascimento,
-          email: email || null,
-          whatsapp: whatsapp || null,
-          instagram: instagram || null,
-          indicacao: indicacao || null,
-        },
-        { transaction },
-      );
+      const updatePayload = {
+        nome,
+        dataNascimento,
+        email: email || null,
+        whatsapp: whatsapp || null,
+        instagram: instagram || null,
+        indicacao: indicacao || null,
+      };
+      if (engajamentoNorm) {
+        updatePayload.engajamentoWhatsapp = engajamentoNorm;
+      }
+
+      await pessoa.update(updatePayload, { transaction });
 
       const enderecoPayload = {
         cep: cep || null,
