@@ -1,4 +1,5 @@
 const express = require("express");
+const { QueryTypes, Op } = require("sequelize");
 const {
   sequelize,
   CampanhaDivulgacaoModel,
@@ -23,6 +24,11 @@ const {
   turnoPorHoraEmFusoCampanha,
   baseTurnoEmFusoCampanha,
 } = require("../services/campanha-agendamento-fuso");
+const {
+  engajamentoDasSentimentosRespondidos,
+  sqlExprSentimentoConsolidadoDestinatario,
+  textosRespostaParaEngajamentoPainel,
+} = require("../services/pessoa-engajamento-whatsapp");
 
 const router = express.Router();
 const apenasAdmin = [authBearerCandidatoObrigatorio(), authorize(["Administrador"])];
@@ -148,6 +154,608 @@ async function prepararEEnfileirarCampanha(campanhaId) {
   await campanha.reload();
   return { campanha, totalEnfileirado: pendentes.length };
 }
+
+const ENGAJAMENTOS_PAINEL = ["sem_resposta", "positivo", "negativo", "neutro"];
+
+function normalizarEngajamentoPainel(value) {
+  const v = String(value ?? "").trim().toLowerCase();
+  return ENGAJAMENTOS_PAINEL.includes(v) ? v : null;
+}
+
+function mapaEngajamentoZerado() {
+  return { sem_resposta: 0, positivo: 0, negativo: 0, neutro: 0, total: 0 };
+}
+
+function parsePaginaPainel(query) {
+  const page = Math.max(1, parseInt(String(query?.page ?? "1"), 10) || 1);
+  const limit = Math.min(100, Math.max(10, parseInt(String(query?.limit ?? "50"), 10) || 50));
+  return { page, limit, offset: (page - 1) * limit };
+}
+
+/** Mesma regra do painel (COALESCE) para listagem bater com os totais dos cards. */
+function whereEngajamentoPessoa(engajamento) {
+  if (!engajamento) return {};
+
+  if (engajamento === "sem_resposta") {
+    return {
+      [Op.or]: [
+        { engajamentoWhatsapp: "sem_resposta" },
+        { engajamentoWhatsapp: "" },
+        { engajamentoWhatsapp: null },
+      ],
+    };
+  }
+
+  return { engajamentoWhatsapp: engajamento };
+}
+
+function normalizarFiltroPainelPessoas(value) {
+  const v = String(value ?? "engajamento").trim().toLowerCase();
+  if (v === "campanha_sem_resposta") return "campanha_sem_resposta";
+  if (v === "campanha_enviados") return "campanha_enviados";
+  return "engajamento";
+}
+
+/** Engajamento consolidado só desta campanha (respostas do destinatário), não o cadastro global da pessoa. */
+function engajamentoCampanhaDestinatario(dest) {
+  return (
+    engajamentoDasSentimentosRespondidos(
+      dest?.resposta_1_sentimento,
+      dest?.resposta_2_sentimento,
+    ) || "sem_resposta"
+  );
+}
+
+/** Engajamento usado para escolher qual resposta recebida exibir. */
+function engajamentoExibicaoDestinatario(dest, opts = {}) {
+  if (opts.engajamento) return opts.engajamento;
+  const naCampanha = engajamentoCampanhaDestinatario(dest);
+  if (naCampanha !== "sem_resposta") return naCampanha;
+  return normalizarEngajamentoPainel(dest?.PessoaModel?.engajamentoWhatsapp);
+}
+
+function mensagemPainelDestinatario(dest, opts = {}) {
+  if (!dest) return null;
+
+  const filtro = opts.filtro || "engajamento";
+  if (filtro === "campanha_sem_resposta") {
+    return null;
+  }
+
+  const eng = engajamentoExibicaoDestinatario(dest, opts);
+  if (!eng || eng === "sem_resposta") {
+    return null;
+  }
+
+  return textosRespostaParaEngajamentoPainel(
+    dest.resposta_1_texto,
+    dest.resposta_2_texto,
+    dest.resposta_1_sentimento,
+    dest.resposta_2_sentimento,
+    eng,
+  );
+}
+
+function includePainelDestinatario(candidatoId) {
+  return [
+    {
+      model: PessoaModel,
+      required: true,
+      where: { candidatoId },
+      include: [{ model: EnderecoModel, required: false }],
+    },
+  ];
+}
+
+function serializarPessoaPainel(p, extra = {}) {
+  return {
+    id: p.id,
+    nome: p.nome,
+    whatsapp: p.whatsapp ?? null,
+    engajamento_whatsapp: String(p.engajamentoWhatsapp || "sem_resposta"),
+    bairro: p.EnderecoModel?.bairro ?? null,
+    erro_whatsapp: Boolean(p.erroWhatsapp),
+    ...extra,
+  };
+}
+
+function serializarPessoaPainelDestinatario(dest, opts = {}) {
+  const p = dest?.PessoaModel;
+  if (!p) return null;
+  const mensagem = mensagemPainelDestinatario(dest, opts);
+  return serializarPessoaPainel(p, {
+    engajamento_whatsapp: engajamentoCampanhaDestinatario(dest),
+    enviado_em: dest.enviado_em ?? null,
+    mensagem: mensagem ?? null,
+    mensagem_tipo: mensagem ? "resposta" : null,
+  });
+}
+
+function timestampRespostasDestinatario(d) {
+  const t1 = d.resposta_1_em ? new Date(d.resposta_1_em).getTime() : 0;
+  const t2 = d.resposta_2_em ? new Date(d.resposta_2_em).getTime() : 0;
+  return Math.max(t1, t2);
+}
+
+function mensagemRespostaPessoaPorEngajamento(dests, engajamento) {
+  let melhorMsg = null;
+  let melhorTs = 0;
+  for (const d of dests) {
+    const consolidado = engajamentoDasSentimentosRespondidos(
+      d.resposta_1_sentimento,
+      d.resposta_2_sentimento,
+    );
+    if (consolidado !== engajamento) continue;
+    const msg = textosRespostaParaEngajamentoPainel(
+      d.resposta_1_texto,
+      d.resposta_2_texto,
+      d.resposta_1_sentimento,
+      d.resposta_2_sentimento,
+      engajamento,
+    );
+    if (!msg) continue;
+    const ts = timestampRespostasDestinatario(d);
+    if (ts >= melhorTs) {
+      melhorTs = ts;
+      melhorMsg = msg;
+    }
+  }
+  return melhorMsg;
+}
+
+async function serializarPessoasPainelComMensagemResposta(pessoas, engajamento, candidatoId) {
+  if (!engajamento || engajamento === "sem_resposta" || !pessoas.length) {
+    return pessoas.map((p) => serializarPessoaPainel(p, { mensagem: null, mensagem_tipo: null }));
+  }
+
+  const ids = pessoas.map((p) => p.id);
+  const dests = await CampanhaDestinatarioModel.findAll({
+    attributes: [
+      "pessoa_id",
+      "resposta_1_texto",
+      "resposta_2_texto",
+      "resposta_1_sentimento",
+      "resposta_2_sentimento",
+      "resposta_1_em",
+      "resposta_2_em",
+    ],
+    include: [
+      {
+        model: PessoaModel,
+        attributes: [],
+        required: true,
+        where: { candidatoId, id: { [Op.in]: ids } },
+      },
+    ],
+  });
+
+  const porPessoa = new Map();
+  for (const d of dests) {
+    const pid = Number(d.pessoa_id);
+    if (!porPessoa.has(pid)) porPessoa.set(pid, []);
+    porPessoa.get(pid).push(d);
+  }
+
+  return pessoas.map((p) => {
+    const mensagem = mensagemRespostaPessoaPorEngajamento(porPessoa.get(p.id) || [], engajamento);
+    return serializarPessoaPainel(p, {
+      mensagem: mensagem ?? null,
+      mensagem_tipo: mensagem ? "resposta" : null,
+    });
+  });
+}
+
+router.get("/painel", ...apenasAdmin, async (req, res, next) => {
+  try {
+    const candidatoId = req.auth.CandidatoId;
+    const engRows = await sequelize.query(
+      `
+      SELECT COALESCE(NULLIF(TRIM(engajamento_whatsapp), ''), 'sem_resposta') AS engajamento,
+             COUNT(*)::integer AS quantidade
+      FROM pessoa
+      WHERE candidato_id = :candidatoId
+      GROUP BY 1
+      `,
+      { replacements: { candidatoId }, type: QueryTypes.SELECT },
+    );
+
+    const engajamento = mapaEngajamentoZerado();
+    for (const row of engRows) {
+      const key = normalizarEngajamentoPainel(row.engajamento) || "sem_resposta";
+      engajamento[key] += Number(row.quantidade || 0);
+      engajamento.total += Number(row.quantidade || 0);
+    }
+
+    const campanhas = await CampanhaDivulgacaoModel.findAll({
+      where: { candidatoId },
+      order: [
+        ["createdAt", "DESC"],
+        ["id", "DESC"],
+      ],
+    });
+
+    const ids = campanhas.map((c) => c.id);
+    const sentConsolidado = sqlExprSentimentoConsolidadoDestinatario();
+    const aggDest = ids.length
+      ? await CampanhaDestinatarioModel.findAll({
+          attributes: [
+            "campanha_id",
+            [sequelize.fn("COUNT", sequelize.col("id")), "total"],
+            [
+              sequelize.fn(
+                "SUM",
+                sequelize.literal(`CASE WHEN status = 'enviado' THEN 1 ELSE 0 END`),
+              ),
+              "enviados",
+            ],
+            [
+              sequelize.fn(
+                "SUM",
+                sequelize.literal(
+                  `CASE WHEN resposta_1_texto IS NOT NULL OR resposta_2_texto IS NOT NULL THEN 1 ELSE 0 END`,
+                ),
+              ),
+              "com_resposta",
+            ],
+            [
+              sequelize.fn(
+                "SUM",
+                sequelize.literal(
+                  `CASE WHEN status = 'enviado' AND resposta_1_texto IS NULL AND resposta_2_texto IS NULL THEN 1 ELSE 0 END`,
+                ),
+              ),
+              "sem_resposta_envio",
+            ],
+            [
+              sequelize.fn(
+                "SUM",
+                sequelize.literal(`CASE WHEN ${sentConsolidado} = 'positivo' THEN 1 ELSE 0 END`),
+              ),
+              "positivo",
+            ],
+            [
+              sequelize.fn(
+                "SUM",
+                sequelize.literal(`CASE WHEN ${sentConsolidado} = 'negativo' THEN 1 ELSE 0 END`),
+              ),
+              "negativo",
+            ],
+            [
+              sequelize.fn(
+                "SUM",
+                sequelize.literal(`CASE WHEN ${sentConsolidado} = 'neutro' THEN 1 ELSE 0 END`),
+              ),
+              "neutro",
+            ],
+          ],
+          where: { campanha_id: ids },
+          group: ["campanha_id"],
+          raw: true,
+        })
+      : [];
+
+    const aggMap = new Map(
+      aggDest.map((a) => [
+        Number(a.campanha_id),
+        {
+          total: Number(a.total || 0),
+          enviados: Number(a.enviados || 0),
+          com_resposta: Number(a.com_resposta || 0),
+          sem_resposta_envio: Number(a.sem_resposta_envio || 0),
+          positivo: Number(a.positivo || 0),
+          negativo: Number(a.negativo || 0),
+          neutro: Number(a.neutro || 0),
+        },
+      ]),
+    );
+
+    const campanhasPainel = campanhas.map((c) => {
+      const agg = aggMap.get(c.id) || {
+        total: 0,
+        enviados: 0,
+        com_resposta: 0,
+        sem_resposta_envio: 0,
+        positivo: 0,
+        negativo: 0,
+        neutro: 0,
+      };
+      return {
+        id: c.id,
+        nome: c.nome,
+        status: c.status,
+        total_destinatarios: c.total_destinatarios ?? agg.total,
+        total_enviados: c.total_enviados ?? agg.enviados,
+        createdAt: c.createdAt,
+        updatedAt: c.updatedAt,
+        respostas: {
+          com_resposta: agg.com_resposta,
+          sem_resposta: agg.sem_resposta_envio,
+          positivo: agg.positivo,
+          negativo: agg.negativo,
+          neutro: agg.neutro,
+        },
+      };
+    });
+
+    const campanhasRealizadas = campanhas.filter((c) =>
+      ["finalizada", "em_andamento", "cancelada", "montada"].includes(String(c.status)),
+    ).length;
+
+    return res.json({
+      totais: {
+        pessoas_cadastradas: engajamento.total,
+        campanhas: campanhas.length,
+        campanhas_realizadas: campanhasRealizadas,
+      },
+      engajamento,
+      campanhas: campanhasPainel,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get("/painel/pessoas", ...apenasAdmin, async (req, res, next) => {
+  try {
+    const candidatoId = req.auth.CandidatoId;
+    const engajamento = normalizarEngajamentoPainel(req.query?.engajamento);
+    const campanhaId = Number(req.query?.campanha_id);
+    const { page, limit, offset } = parsePaginaPainel(req.query);
+    const filtro = normalizarFiltroPainelPessoas(req.query?.filtro);
+
+    if (filtro === "campanha_sem_resposta") {
+      if (!Number.isInteger(campanhaId) || campanhaId <= 0) {
+        return res.status(400).json({ message: "Informe campanha_id para listar sem resposta na campanha." });
+      }
+      const campanha = await CampanhaDivulgacaoModel.findOne({
+        where: { id: campanhaId, candidatoId },
+        attributes: ["id", "nome"],
+      });
+      if (!campanha) {
+        return res.status(404).json({ message: "Campanha não encontrada." });
+      }
+
+      const whereDest = {
+        campanha_id: campanhaId,
+        status: "enviado",
+        resposta_1_texto: null,
+        resposta_2_texto: null,
+      };
+
+      const { count, rows: destinatarios } = await CampanhaDestinatarioModel.findAndCountAll({
+        where: whereDest,
+        include: includePainelDestinatario(candidatoId),
+        order: [["ordem", "ASC"]],
+        limit,
+        offset,
+        distinct: true,
+      });
+
+      return res.json({
+        filtro: "campanha_sem_resposta",
+        engajamento: null,
+        campanha_id: campanhaId,
+        campanha_nome: campanha.nome,
+        total: count,
+        page,
+        limit,
+        pessoas: destinatarios
+          .map((d) => serializarPessoaPainelDestinatario(d, { filtro: "campanha_sem_resposta" }))
+          .filter(Boolean),
+      });
+    }
+
+    if (filtro === "campanha_enviados") {
+      if (!Number.isInteger(campanhaId) || campanhaId <= 0) {
+        return res.status(400).json({ message: "Informe campanha_id para listar enviados na campanha." });
+      }
+      const campanha = await CampanhaDivulgacaoModel.findOne({
+        where: { id: campanhaId, candidatoId },
+        attributes: ["id", "nome"],
+      });
+      if (!campanha) {
+        return res.status(404).json({ message: "Campanha não encontrada." });
+      }
+
+      const { count, rows: destinatarios } = await CampanhaDestinatarioModel.findAndCountAll({
+        where: { campanha_id: campanhaId, status: "enviado" },
+        include: includePainelDestinatario(candidatoId),
+        order: [[{ model: PessoaModel }, "nome", "ASC"]],
+        limit,
+        offset,
+        distinct: true,
+      });
+
+      return res.json({
+        filtro: "campanha_enviados",
+        engajamento: null,
+        campanha_id: campanhaId,
+        campanha_nome: campanha.nome,
+        total: count,
+        page,
+        limit,
+        pessoas: destinatarios
+          .map((d) => serializarPessoaPainelDestinatario(d, { filtro: "campanha_enviados" }))
+          .filter(Boolean),
+      });
+    }
+
+    let campanhaNome = null;
+    const temCampanha = Number.isInteger(campanhaId) && campanhaId > 0;
+
+    if (temCampanha) {
+      const campanha = await CampanhaDivulgacaoModel.findOne({
+        where: { id: campanhaId, candidatoId },
+        attributes: ["id", "nome"],
+      });
+      if (!campanha) {
+        return res.status(404).json({ message: "Campanha não encontrada." });
+      }
+      campanhaNome = campanha.nome;
+
+      if (engajamento) {
+        const sentExpr = sqlExprSentimentoConsolidadoDestinatario("cd");
+        const [totalRow] = await sequelize.query(
+          `
+          SELECT COUNT(*)::integer AS total
+          FROM campanha_destinatario cd
+          INNER JOIN pessoa p ON p.id = cd.pessoa_id AND p.candidato_id = :candidatoId
+          WHERE cd.campanha_id = :campanhaId
+            AND (${sentExpr}) = :engajamento
+          `,
+          {
+            replacements: { campanhaId, engajamento, candidatoId },
+            type: QueryTypes.SELECT,
+          },
+        );
+        const total = Number(totalRow?.total || 0);
+        if (!total) {
+          return res.json({
+            filtro: "engajamento",
+            engajamento,
+            campanha_id: campanhaId,
+            campanha_nome: campanhaNome,
+            total: 0,
+            page,
+            limit,
+            pessoas: [],
+          });
+        }
+
+        const idsRows = await sequelize.query(
+          `
+          SELECT cd.id
+          FROM campanha_destinatario cd
+          INNER JOIN pessoa p ON p.id = cd.pessoa_id AND p.candidato_id = :candidatoId
+          WHERE cd.campanha_id = :campanhaId
+            AND (${sentExpr}) = :engajamento
+          ORDER BY p.nome ASC
+          LIMIT :limit OFFSET :offset
+          `,
+          {
+            replacements: { campanhaId, engajamento, candidatoId, limit, offset },
+            type: QueryTypes.SELECT,
+          },
+        );
+        const idsDestinatarios = idsRows.map((r) => Number(r.id)).filter((id) => id > 0);
+        if (!idsDestinatarios.length) {
+          return res.json({
+            filtro: "engajamento",
+            engajamento,
+            campanha_id: campanhaId,
+            campanha_nome: campanhaNome,
+            total,
+            page,
+            limit,
+            pessoas: [],
+          });
+        }
+
+        const destinatarios = await CampanhaDestinatarioModel.findAll({
+          where: { id: { [Op.in]: idsDestinatarios } },
+          include: includePainelDestinatario(candidatoId),
+        });
+        const ordemIds = new Map(idsDestinatarios.map((id, idx) => [id, idx]));
+        destinatarios.sort(
+          (a, b) => (ordemIds.get(a.id) ?? 0) - (ordemIds.get(b.id) ?? 0),
+        );
+
+        return res.json({
+          filtro: "engajamento",
+          engajamento,
+          campanha_id: campanhaId,
+          campanha_nome: campanhaNome,
+          total,
+          page,
+          limit,
+          pessoas: destinatarios
+            .map((d) => serializarPessoaPainelDestinatario(d, { filtro: "engajamento", engajamento }))
+            .filter(Boolean),
+        });
+      }
+
+      const dests = await CampanhaDestinatarioModel.findAll({
+        where: { campanha_id: campanhaId },
+        attributes: ["pessoa_id"],
+        raw: true,
+      });
+      const pessoaIdsCampanha = [...new Set(dests.map((d) => Number(d.pessoa_id)).filter((id) => id > 0))];
+      if (!pessoaIdsCampanha.length) {
+        return res.json({
+          filtro: "engajamento",
+          engajamento: engajamento || null,
+          campanha_id: campanhaId,
+          campanha_nome: campanhaNome,
+          total: 0,
+          page,
+          limit,
+          pessoas: [],
+        });
+      }
+
+      const wherePessoaCampanha = {
+        candidatoId,
+        id: { [Op.in]: pessoaIdsCampanha },
+        ...whereEngajamentoPessoa(engajamento),
+      };
+
+      const { count, rows: pessoas } = await PessoaModel.findAndCountAll({
+        where: wherePessoaCampanha,
+        include: [{ model: EnderecoModel, required: false }],
+        order: [["nome", "ASC"]],
+        limit,
+        offset,
+        distinct: true,
+      });
+
+      const pessoasSerializadas = engajamento
+        ? await serializarPessoasPainelComMensagemResposta(pessoas, engajamento, candidatoId)
+        : pessoas.map((p) => serializarPessoaPainel(p));
+
+      return res.json({
+        filtro: "engajamento",
+        engajamento: engajamento || null,
+        campanha_id: campanhaId,
+        campanha_nome: campanhaNome,
+        total: count,
+        page,
+        limit,
+        pessoas: pessoasSerializadas,
+      });
+    }
+
+    const wherePessoa = {
+      candidatoId,
+      ...whereEngajamentoPessoa(engajamento),
+    };
+
+    const { count, rows: pessoas } = await PessoaModel.findAndCountAll({
+      where: wherePessoa,
+      include: [{ model: EnderecoModel, required: false }],
+      order: [["nome", "ASC"]],
+      limit,
+      offset,
+      distinct: true,
+    });
+
+    const pessoasPainel = engajamento
+      ? await serializarPessoasPainelComMensagemResposta(pessoas, engajamento, candidatoId)
+      : pessoas.map((p) => serializarPessoaPainel(p));
+
+    return res.json({
+      filtro: "engajamento",
+      engajamento: engajamento || null,
+      campanha_id: null,
+      campanha_nome: campanhaNome,
+      total: count,
+      page,
+      limit,
+      pessoas: pessoasPainel,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
 
 router.get("/", ...apenasAdmin, async (req, res, next) => {
   try {
