@@ -39,6 +39,91 @@ function sqlExprSentimentoConsolidadoDestinatario(prefix = "") {
   END)`;
 }
 
+const ENGAJAMENTOS_VALIDOS = ["sem_resposta", "positivo", "negativo", "neutro"];
+
+function normalizarEngajamentoManual(value) {
+  const v = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  return ENGAJAMENTOS_VALIDOS.includes(v) ? v : null;
+}
+
+/**
+ * Corrige manualmente o sentimento das respostas do destinatário na campanha
+ * e recalcula o engajamento da pessoa.
+ */
+async function aplicarEngajamentoManualDestinatario(destinatarioId, engajamento, options = {}) {
+  const id = Number(destinatarioId);
+  const eng = normalizarEngajamentoManual(engajamento);
+  if (!id || !eng) {
+    const err = new Error("Engajamento inválido. Use: sem_resposta, positivo, negativo ou neutro.");
+    err.status = 400;
+    throw err;
+  }
+
+  const { CampanhaDestinatarioModel, CampanhaDivulgacaoModel } = require("../models");
+  const { transaction: extTransaction } = options;
+
+  const run = async (transaction) => {
+    const dest = await CampanhaDestinatarioModel.findOne({
+      where: { id },
+      include: [
+        {
+          model: CampanhaDivulgacaoModel,
+          required: true,
+          attributes: ["id", "candidatoId"],
+          ...(options.candidatoId ? { where: { candidatoId: options.candidatoId } } : {}),
+        },
+      ],
+      transaction,
+      lock: true,
+    });
+    if (!dest) return null;
+
+    const temTexto1 = Boolean(String(dest.resposta_1_texto || "").trim());
+    const temTexto2 = Boolean(String(dest.resposta_2_texto || "").trim());
+    if (!temTexto1 && !temTexto2 && eng !== "sem_resposta") {
+      const err = new Error("Não há resposta registrada nesta campanha para reclassificar.");
+      err.status = 400;
+      throw err;
+    }
+
+    const updatePayload = {};
+    if (eng === "sem_resposta") {
+      if (temTexto1) updatePayload.resposta_1_sentimento = null;
+      if (temTexto2) updatePayload.resposta_2_sentimento = null;
+    } else {
+      if (temTexto1) updatePayload.resposta_1_sentimento = eng;
+      if (temTexto2) updatePayload.resposta_2_sentimento = eng;
+    }
+
+    if (Object.keys(updatePayload).length) {
+      await dest.update(updatePayload, { transaction });
+      await dest.reload({ transaction });
+    }
+
+    if (eng === "sem_resposta") {
+      await PessoaModel.update(
+        { engajamentoWhatsapp: "sem_resposta" },
+        { where: { id: dest.pessoa_id }, transaction },
+      );
+    } else {
+      await atualizarEngajamentoPessoaDeRespostas(
+        dest.pessoa_id,
+        dest.resposta_1_sentimento,
+        dest.resposta_2_sentimento,
+        { transaction },
+      );
+    }
+
+    return dest;
+  };
+
+  if (extTransaction) return run(extTransaction);
+  const { sequelize } = require("../models");
+  return sequelize.transaction(run);
+}
+
 async function atualizarEngajamentoPessoaDeRespostas(pessoaId, resposta1Sentimento, resposta2Sentimento, options = {}) {
   const id = Number(pessoaId);
   if (!id) return;
@@ -89,5 +174,7 @@ module.exports = {
   engajamentoDasSentimentosRespondidos,
   sqlExprSentimentoConsolidadoDestinatario,
   textosRespostaParaEngajamentoPainel,
+  normalizarEngajamentoManual,
+  aplicarEngajamentoManualDestinatario,
   atualizarEngajamentoPessoaDeRespostas,
 };

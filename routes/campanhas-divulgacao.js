@@ -28,6 +28,8 @@ const {
   engajamentoDasSentimentosRespondidos,
   sqlExprSentimentoConsolidadoDestinatario,
   textosRespostaParaEngajamentoPainel,
+  normalizarEngajamentoManual,
+  aplicarEngajamentoManualDestinatario,
 } = require("../services/pessoa-engajamento-whatsapp");
 
 const router = express.Router();
@@ -264,6 +266,8 @@ function serializarPessoaPainelDestinatario(dest, opts = {}) {
   if (!p) return null;
   const mensagem = mensagemPainelDestinatario(dest, opts);
   return serializarPessoaPainel(p, {
+    destinatario_id: dest.id,
+    campanha_id: dest.campanha_id,
     engajamento_whatsapp: engajamentoCampanhaDestinatario(dest),
     enviado_em: dest.enviado_em ?? null,
     mensagem: mensagem ?? null,
@@ -753,6 +757,45 @@ router.get("/painel/pessoas", ...apenasAdmin, async (req, res, next) => {
       pessoas: pessoasPainel,
     });
   } catch (err) {
+    next(err);
+  }
+});
+
+router.patch("/painel/destinatario-engajamento", ...apenasAdmin, async (req, res, next) => {
+  try {
+    const candidatoId = req.auth.CandidatoId;
+    const destinatarioId = Number(req.body?.destinatario_id);
+    const engajamento = normalizarEngajamentoManual(req.body?.engajamento);
+
+    if (!Number.isInteger(destinatarioId) || destinatarioId <= 0) {
+      return res.status(400).json({ message: "Informe destinatario_id válido." });
+    }
+    if (!engajamento) {
+      return res.status(400).json({
+        message: "Engajamento inválido. Use: sem_resposta, positivo, negativo ou neutro.",
+      });
+    }
+
+    const dest = await aplicarEngajamentoManualDestinatario(destinatarioId, engajamento, {
+      candidatoId,
+    });
+    if (!dest) {
+      return res.status(404).json({ message: "Destinatário não encontrado nesta campanha." });
+    }
+
+    const destCompleto = await CampanhaDestinatarioModel.findByPk(dest.id, {
+      include: includePainelDestinatario(candidatoId),
+    });
+    const pessoa = serializarPessoaPainelDestinatario(destCompleto, {
+      filtro: "engajamento",
+      engajamento,
+    });
+
+    return res.json({ pessoa });
+  } catch (err) {
+    if (err?.status === 400) {
+      return res.status(400).json({ message: err.message });
+    }
     next(err);
   }
 });
