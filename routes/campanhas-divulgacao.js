@@ -111,7 +111,95 @@ function gerarAgendamentoPorDisparo(index, mensagensPorTurno, disparoEm, usedKey
   return { turno, agendadoPara: candidate };
 }
 
-async function prepararEEnfileirarCampanha(campanhaId) {
+function campanhaEhAniversariantes(nome) {
+  return /^aniversariantes do dia\s+\d{2}\/\d{2}$/i.test(String(nome ?? "").trim());
+}
+
+const CAMPOS_RESET_REENVIO_DESTINATARIO = {
+  status: "pendente",
+  erro_ultimo: null,
+  falha_entrega: false,
+  falha_codigo: null,
+  falha_em: null,
+  wa_message_id_envio: null,
+  enviado_em: null,
+  agendado_para: null,
+  resposta_1_texto: null,
+  resposta_1_em: null,
+  resposta_1_wa_id: null,
+  resposta_1_sentimento: null,
+  resposta_2_texto: null,
+  resposta_2_em: null,
+  resposta_2_wa_id: null,
+  resposta_2_sentimento: null,
+};
+
+function resolverDisparoInicio(body) {
+  const modo = String(body?.modo ?? "agora").trim().toLowerCase();
+  let disparoEm = new Date();
+  if (modo === "agendar") {
+    const parsed = body?.agendado_para ? new Date(body.agendado_para) : null;
+    if (!parsed || Number.isNaN(parsed.getTime())) {
+      return { error: "Informe data e hora validas para agendar o envio." };
+    }
+    const minimoMs = Date.now() + 60 * 1000;
+    if (parsed.getTime() < minimoMs) {
+      return { error: "O agendamento deve ser pelo menos 1 minuto no futuro." };
+    }
+    disparoEm = parsed;
+  } else if (modo !== "agora") {
+    return { error: "Modo invalido. Use: agora ou agendar." };
+  }
+  return { modo, disparoEm };
+}
+
+async function validarCanalWhatsappCampanha(campanha, candidatoId, acaoLabel) {
+  const canalId = Number(campanha.whatsapp_canal_id);
+  if (!Number.isInteger(canalId) || canalId <= 0) {
+    return {
+      error: "Campanha sem canal WhatsApp definido. Recrie a campanha selecionando um celular.",
+    };
+  }
+  const canalRow = await WhatsappCanalModel.findOne({
+    where: { id: canalId, candidatoId },
+  });
+  if (!canalRow) {
+    return { error: "Canal WhatsApp da campanha nao encontrado." };
+  }
+  const wpp = whatsappService.getStatusByCanalId(canalId, candidatoId, canalRow.nome);
+  if (!wpp.conectado) {
+    return {
+      error: `O celular "${canalRow.nome}" nao esta conectado. Conecte-o em Conexao WhatsApp antes de ${acaoLabel}.`,
+    };
+  }
+  return { canalRow };
+}
+
+async function resetarDestinatariosCanceladosEErros(campanhaId) {
+  const [total] = await CampanhaDestinatarioModel.update(CAMPOS_RESET_REENVIO_DESTINATARIO, {
+    where: {
+      campanha_id: campanhaId,
+      status: { [Op.in]: ["cancelado", "erro"] },
+    },
+  });
+  return total;
+}
+
+async function reiniciarEnvioCampanha(campanhaId, options = {}) {
+  const totalResetados = await resetarDestinatariosCanceladosEErros(campanhaId);
+  if (!totalResetados) {
+    return { totalResetados: 0, campanha: null, totalEnfileirado: 0, primeiroAgendadoPara: null };
+  }
+  const resultado = await prepararEEnfileirarCampanha(campanhaId, options);
+  return {
+    totalResetados,
+    campanha: resultado?.campanha ?? null,
+    totalEnfileirado: resultado?.totalEnfileirado ?? 0,
+    primeiroAgendadoPara: resultado?.primeiroAgendadoPara ?? null,
+  };
+}
+
+async function prepararEEnfileirarCampanha(campanhaId, options = {}) {
   const campanha = await CampanhaDivulgacaoModel.findByPk(campanhaId);
   if (!campanha) return null;
 
@@ -123,11 +211,14 @@ async function prepararEEnfileirarCampanha(campanhaId) {
   if (!pendentes.length) {
     await campanha.update({ status: "finalizada" });
     await campanha.reload();
-    return { campanha, totalEnfileirado: 0 };
+    return { campanha, totalEnfileirado: 0, primeiroAgendadoPara: null };
   }
 
   const usados = new Set();
-  const disparoEm = new Date();
+  const disparoEm =
+    options.disparoEm instanceof Date && !Number.isNaN(options.disparoEm.getTime())
+      ? options.disparoEm
+      : new Date();
   const mensagensPorTurno = Math.max(1, Number(campanha.mensagens_por_turno || 2));
 
   await sequelize.transaction(async (transaction) => {
@@ -154,7 +245,17 @@ async function prepararEEnfileirarCampanha(campanhaId) {
   await enfileirarDestinatarios(pendentesReagendados);
   await campanha.update({ status: "em_andamento" });
   await campanha.reload();
-  return { campanha, totalEnfileirado: pendentes.length };
+
+  const primeiroAgendadoPara = pendentesReagendados.length
+    ? pendentesReagendados.reduce((min, item) => {
+        const ts = new Date(item.agendado_para).getTime();
+        if (!Number.isFinite(ts)) return min;
+        if (!min) return item.agendado_para;
+        return ts < new Date(min).getTime() ? item.agendado_para : min;
+      }, null)
+    : null;
+
+  return { campanha, totalEnfileirado: pendentes.length, primeiroAgendadoPara };
 }
 
 const ENGAJAMENTOS_PAINEL = ["sem_resposta", "positivo", "negativo", "neutro"];
@@ -837,6 +938,20 @@ router.get("/", ...apenasAdmin, async (req, res, next) => {
               ),
               "pendentes",
             ],
+            [
+              sequelize.fn(
+                "SUM",
+                sequelize.literal(`CASE WHEN status = 'cancelado' THEN 1 ELSE 0 END`),
+              ),
+              "cancelados",
+            ],
+            [
+              sequelize.fn(
+                "SUM",
+                sequelize.literal(`CASE WHEN status = 'erro' THEN 1 ELSE 0 END`),
+              ),
+              "erros",
+            ],
           ],
           where: { campanha_id: ids },
           group: ["campanha_id"],
@@ -851,13 +966,21 @@ router.get("/", ...apenasAdmin, async (req, res, next) => {
           total: Number(a.total || 0),
           enviados: Number(a.enviados || 0),
           pendentes: Number(a.pendentes || 0),
+          cancelados: Number(a.cancelados || 0),
+          erros: Number(a.erros || 0),
         },
       ]),
     );
 
     return res.json(
       campanhas.map((c) => {
-        const agg = map.get(c.id) || { total: 0, enviados: 0, pendentes: 0 };
+        const agg = map.get(c.id) || {
+          total: 0,
+          enviados: 0,
+          pendentes: 0,
+          cancelados: 0,
+          erros: 0,
+        };
         const canal = c.WhatsappCanalModel;
         return {
           id: c.id,
@@ -876,6 +999,8 @@ router.get("/", ...apenasAdmin, async (req, res, next) => {
           total_destinatarios: c.total_destinatarios ?? agg.total,
           total_enviados: c.total_enviados ?? agg.enviados,
           total_pendentes: agg.pendentes,
+          total_cancelados: agg.cancelados,
+          total_erros: agg.erros,
           createdAt: c.createdAt,
           updatedAt: c.updatedAt,
         };
@@ -987,6 +1112,7 @@ router.get("/:id", ...apenasAdmin, async (req, res, next) => {
 router.post("/", ...apenasAdmin, async (req, res, next) => {
   try {
     const nome = req.body?.nome != null ? String(req.body.nome).trim() : "";
+    const campanhaAniversariantes = /^aniversariantes do dia\s+\d{2}\/\d{2}$/i.test(nome);
     const pessoaIds = Array.isArray(req.body?.pessoa_ids) ? req.body.pessoa_ids.map(Number) : [];
     const modeloIds = Array.isArray(req.body?.modelo_ids) ? req.body.modelo_ids.map(Number) : [];
     const mensagensPorTurnoRaw = Number(req.body?.mensagens_por_turno ?? 2);
@@ -1012,7 +1138,12 @@ router.post("/", ...apenasAdmin, async (req, res, next) => {
 
     if (!pessoaIdsValidos.length)
       return res.status(400).json({ message: "Selecione pelo menos uma pessoa." });
-    if (modeloIdsValidos.length < 2) {
+    if (campanhaAniversariantes && modeloIdsValidos.length !== 1) {
+      return res
+        .status(400)
+        .json({ message: "Para campanha de aniversariantes, selecione obrigatoriamente 1 modelo." });
+    }
+    if (!campanhaAniversariantes && modeloIdsValidos.length < 2) {
       return res
         .status(400)
         .json({ message: "Selecione obrigatoriamente 2 ou mais modelos diferentes." });
@@ -1150,41 +1281,115 @@ router.post("/:id/iniciar", ...apenasAdmin, async (req, res, next) => {
     }
 
     const loginIniciar = String(req.auth.preferred_username ?? "").trim().toLowerCase();
-    if (loginIniciar !== "admin") {
+    const ehAniversario = campanhaEhAniversariantes(campanha.nome);
+    if (loginIniciar !== "admin" && !ehAniversario) {
       return res.status(403).json({
         message: "Apenas o usuario com login admin pode iniciar o envio da campanha.",
       });
     }
 
+    const disparo = resolverDisparoInicio(req.body);
+    if (disparo.error) {
+      return res.status(400).json({ message: disparo.error });
+    }
+    const { modo, disparoEm } = disparo;
+
     if (String(campanha.status) === "cancelada") {
-      return res.status(400).json({ message: "Campanha cancelada nao pode ser iniciada." });
-    }
-    const canalId = Number(campanha.whatsapp_canal_id);
-    if (!Number.isInteger(canalId) || canalId <= 0) {
       return res.status(400).json({
-        message: "Campanha sem canal WhatsApp definido. Recrie a campanha selecionando um celular.",
+        message: "Campanha cancelada nao pode ser iniciada. Use Reiniciar envio.",
       });
     }
-    const canalRow = await WhatsappCanalModel.findOne({
-      where: { id: canalId, candidatoId: req.auth.CandidatoId },
-    });
-    if (!canalRow) {
-      return res.status(400).json({ message: "Canal WhatsApp da campanha nao encontrado." });
-    }
-    const wpp = whatsappService.getStatusByCanalId(canalId, req.auth.CandidatoId, canalRow.nome);
-    if (!wpp.conectado) {
-      return res.status(400).json({
-        message: `O celular "${canalRow.nome}" nao esta conectado. Conecte-o em Conexao WhatsApp antes de iniciar.`,
-      });
+    const canal = await validarCanalWhatsappCampanha(campanha, req.auth.CandidatoId, "iniciar");
+    if (canal.error) {
+      return res.status(400).json({ message: canal.error });
     }
 
-    const { campanha: atualizada, totalEnfileirado } = await prepararEEnfileirarCampanha(id);
+    const { campanha: atualizada, totalEnfileirado, primeiroAgendadoPara } =
+      await prepararEEnfileirarCampanha(id, { disparoEm });
+    let message;
+    if (!totalEnfileirado) {
+      message = "Campanha sem destinatarios pendentes para envio.";
+    } else if (modo === "agendar" && primeiroAgendadoPara) {
+      message = `Campanha agendada com sucesso (${totalEnfileirado} destinatario(s)). Primeiro envio previsto para ${new Date(primeiroAgendadoPara).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })}.`;
+    } else {
+      message = `Campanha enfileirada com sucesso (${totalEnfileirado} destinatario(s)).`;
+    }
     return res.status(200).json({
       id,
       status: atualizada?.status ?? "finalizada",
-      message: totalEnfileirado
-        ? `Campanha enfileirada com sucesso (${totalEnfileirado} destinatario(s)).`
-        : "Campanha sem destinatarios pendentes para envio.",
+      agendado: modo === "agendar",
+      primeiro_agendado_para: primeiroAgendadoPara ?? null,
+      message,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/:id/reiniciar", ...apenasAdmin, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ message: "ID invalido." });
+    }
+
+    const campanha = await CampanhaDivulgacaoModel.findOne({
+      where: { id, candidatoId: req.auth.CandidatoId },
+    });
+    if (!campanha) {
+      return res.status(404).json({ message: "Campanha nao encontrada." });
+    }
+
+    const loginReiniciar = String(req.auth.preferred_username ?? "").trim().toLowerCase();
+    const ehAniversario = campanhaEhAniversariantes(campanha.nome);
+    if (loginReiniciar !== "admin" && !ehAniversario) {
+      return res.status(403).json({
+        message: "Apenas o usuario com login admin pode reiniciar o envio da campanha.",
+      });
+    }
+
+    if (String(campanha.status) !== "cancelada") {
+      return res.status(400).json({
+        message: "Somente campanhas canceladas podem ser reiniciadas.",
+      });
+    }
+
+    const disparo = resolverDisparoInicio(req.body);
+    if (disparo.error) {
+      return res.status(400).json({ message: disparo.error });
+    }
+    const { modo, disparoEm } = disparo;
+
+    const canal = await validarCanalWhatsappCampanha(campanha, req.auth.CandidatoId, "reiniciar");
+    if (canal.error) {
+      return res.status(400).json({ message: canal.error });
+    }
+
+    const { totalResetados, campanha: atualizada, totalEnfileirado, primeiroAgendadoPara } =
+      await reiniciarEnvioCampanha(id, { disparoEm });
+
+    if (!totalResetados) {
+      return res.status(400).json({
+        message: "Nao ha destinatarios cancelados ou com erro para reiniciar nesta campanha.",
+      });
+    }
+
+    let message;
+    if (!totalEnfileirado) {
+      message = "Nenhum destinatario foi enfileirado apos o reinicio.";
+    } else if (modo === "agendar" && primeiroAgendadoPara) {
+      message = `Campanha reiniciada e agendada (${totalEnfileirado} destinatario(s)). Primeiro envio previsto para ${new Date(primeiroAgendadoPara).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })}.`;
+    } else {
+      message = `Campanha reiniciada com sucesso (${totalEnfileirado} destinatario(s) reenfileirado(s)).`;
+    }
+
+    return res.status(200).json({
+      id,
+      status: atualizada?.status ?? "em_andamento",
+      agendado: modo === "agendar",
+      primeiro_agendado_para: primeiroAgendadoPara ?? null,
+      total_reiniciados: totalResetados,
+      message,
     });
   } catch (err) {
     next(err);
@@ -1205,30 +1410,12 @@ router.post("/:id/reprocessar-erros", ...apenasAdmin, async (req, res, next) => 
       return res.status(404).json({ message: "Campanha nao encontrada." });
     }
 
-    const [totalAtualizados] = await CampanhaDestinatarioModel.update(
-      {
-        status: "pendente",
-        erro_ultimo: null,
-        falha_entrega: false,
-        falha_codigo: null,
-        falha_em: null,
-        wa_message_id_envio: null,
-        resposta_1_texto: null,
-        resposta_1_em: null,
-        resposta_1_wa_id: null,
-        resposta_1_sentimento: null,
-        resposta_2_texto: null,
-        resposta_2_em: null,
-        resposta_2_wa_id: null,
-        resposta_2_sentimento: null,
+    const [totalAtualizados] = await CampanhaDestinatarioModel.update(CAMPOS_RESET_REENVIO_DESTINATARIO, {
+      where: {
+        campanha_id: id,
+        status: "erro",
       },
-      {
-        where: {
-          campanha_id: id,
-          status: "erro",
-        },
-      },
-    );
+    });
     if (!totalAtualizados) {
       return res.status(200).json({
         id,
