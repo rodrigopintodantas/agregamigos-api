@@ -23,5 +23,6 @@ router.use("/votacao", require("./votacao"));
 router.use("/ouvidoria", require("./ouvidoria"));
 router.use("/candidatos", require("./candidatos"));
 router.use("/zonas-eleitorais", require("./zonas-eleitorais"));
+router.use("/multiplicadores", require("./multiplicadores"));
 
 module.exports = router;
