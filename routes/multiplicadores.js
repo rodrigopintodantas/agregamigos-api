@@ -2,6 +2,7 @@ const express = require("express");
 const { QueryTypes } = require("sequelize");
 const {
   sequelize,
+  EventoModel,
   UsuarioCandidatoModel,
   UsuarioModel,
   PapelModel,
@@ -105,6 +106,22 @@ router.get("/painel", ...apenasAdmin, async (req, res, next) => {
         total: c.total_cadastros,
       }));
 
+    const eventosRows = await EventoModel.findAll({
+      where: { candidatoId },
+      attributes: ["id", "nome", "total_inscritos"],
+      order: [
+        ["total_inscritos", "DESC"],
+        ["nome", "ASC"],
+        ["id", "ASC"],
+      ],
+    });
+
+    const comparativo_eventos = eventosRows.map((e) => ({
+      evento_id: e.id,
+      nome: e.nome,
+      total: Number(e.total_inscritos) || 0,
+    }));
+
     const meses = mesesUltimosN(12);
     const mensalRows = await sequelize.query(
       `
@@ -155,6 +172,7 @@ router.get("/painel", ...apenasAdmin, async (req, res, next) => {
       },
       coordenadores: coordenadoresPainel,
       comparativo,
+      comparativo_eventos,
       evolucao_mensal: {
         meses,
         series,

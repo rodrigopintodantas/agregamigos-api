@@ -810,6 +810,13 @@ router.post("/importar-csv", authBearerCandidatoObrigatorio(), async (req, res, 
       return res.status(403).json({ message: "Operação reservada ao administrador." });
     }
 
+    const idCoordenadorImportacao =
+      ehCoordenador(req) && eventoImportacao ? Number(req.auth.UsuarioId) : null;
+    const coordenadorImportacaoValido =
+      idCoordenadorImportacao != null &&
+      Number.isInteger(idCoordenadorImportacao) &&
+      idCoordenadorImportacao > 0;
+
     const payload = registros
       .map((item) => {
         const row = item && typeof item === "object" ? item : {};
@@ -963,6 +970,7 @@ router.post("/importar-csv", authBearerCandidatoObrigatorio(), async (req, res, 
             instagram: item.instagram,
             indicacao: item.indicacao,
             candidatoId: req.auth.CandidatoId,
+            ...(coordenadorImportacaoValido ? { idCoordenador: idCoordenadorImportacao } : {}),
             ...(item.createdAt ? { createdAt: item.createdAt, updatedAt: item.createdAt } : {}),
           },
           { transaction },
@@ -979,6 +987,19 @@ router.post("/importar-csv", authBearerCandidatoObrigatorio(), async (req, res, 
             bairro: item.endereco.bairro,
           },
           { transaction },
+        );
+      }
+
+      if (coordenadorImportacaoValido && idsVincularEvento.size) {
+        await PessoaModel.update(
+          { idCoordenador: idCoordenadorImportacao },
+          {
+            where: {
+              id: [...idsVincularEvento],
+              candidatoId: req.auth.CandidatoId,
+            },
+            transaction,
+          },
         );
       }
 
