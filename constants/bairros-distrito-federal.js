@@ -1,0 +1,45 @@
+/** Bairros/regiões administrativas do Distrito Federal (mesma lista do link de cadastro). */
+const BAIRROS_DISTRITO_FEDERAL = [
+  "Aguas Claras",
+  "Arniqueira",
+  "Asa Norte",
+  "Asa Sul",
+  "Brasilia",
+  "Brazlandia",
+  "Candangolandia",
+  "Ceilandia",
+  "Cruzeiro",
+  "Fercal",
+  "Gama",
+  "Guara",
+  "Itapoa",
+  "Jardim Botanico",
+  "Lago Norte",
+  "Lago Sul",
+  "Nucleo Bandeirante",
+  "Park Way",
+  "Paranoa",
+  "Planaltina",
+  "Recanto das Emas",
+  "Riacho Fundo",
+  "Riacho Fundo II",
+  "Samambaia",
+  "Santa Maria",
+  "Sao Sebastiao",
+  "SCIA/Estrutural",
+  "SIA",
+  "Sobradinho",
+  "Sobradinho II",
+  "Sol Nascente/Por do Sol",
+  "Sudoeste/Octogonal",
+  "Taguatinga",
+  "Varjao",
+  "Vicente Pires",
+];
+
+const BAIRROS_DF_SET = new Set(BAIRROS_DISTRITO_FEDERAL);
+
+module.exports = {
+  BAIRROS_DISTRITO_FEDERAL,
+  BAIRROS_DF_SET,
+};

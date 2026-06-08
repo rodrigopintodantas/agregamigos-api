@@ -1,7 +1,22 @@
 const crypto = require("crypto");
 const express = require("express");
 const { QueryTypes, Op } = require("sequelize");
-const { sequelize, PessoaModel, EnderecoModel, ConsentimentoLgpdModel, CandidatoModel, UsuarioCandidatoModel, UsuarioModel, PapelModel } = require("../models");
+const {
+  sequelize,
+  PessoaModel,
+  EnderecoModel,
+  ConsentimentoLgpdModel,
+  CandidatoModel,
+  UsuarioCandidatoModel,
+  UsuarioModel,
+  PapelModel,
+  EventoModel,
+  EventoPessoaModel,
+} = require("../models");
+const {
+  listarCoordenadoresResumoPorEventoId,
+  idsCoordenadoresDoEvento,
+} = require("../services/evento-coordenador");
 const { authBearerCandidatoObrigatorio } = require("../auth/authorize");
 
 const router = express.Router();
@@ -284,7 +299,35 @@ async function candidatoPorSlugPublico(res, slugParam) {
 }
 
 /** Nomes de query reservados; demais chaves "flag" alfanuméricas são tratadas como token de divulgação. */
-const QUERY_PARAMS_RESERVADOS_LINK_CADASTRO = new Set(["coordenador"]);
+const QUERY_PARAMS_RESERVADOS_LINK_CADASTRO = new Set(["coordenador", "evento"]);
+
+async function buscarEventoAtivoPorToken(candidatoId, token) {
+  const t = String(token ?? "").trim();
+  if (!t) return null;
+  return EventoModel.findOne({
+    where: {
+      candidatoId,
+      token_cadastro: t,
+      status: { [Op.ne]: "encerrado" },
+    },
+  });
+}
+
+async function vincularPessoaAoEvento(eventoId, pessoaId, transaction) {
+  const [vinculo, created] = await EventoPessoaModel.findOrCreate({
+    where: { evento_id: eventoId, pessoa_id: pessoaId },
+    defaults: { evento_id: eventoId, pessoa_id: pessoaId },
+    transaction,
+  });
+  if (created) {
+    await EventoModel.increment("total_inscritos", {
+      by: 1,
+      where: { id: eventoId },
+      transaction,
+    });
+  }
+  return vinculo;
+}
 
 function chavesDivulgacaoLinkCadastroNaQuery(req) {
   const q = req.query || {};
@@ -336,6 +379,20 @@ router.get("/link-cadastro/:slugPublico/contexto", async (req, res, next) => {
       return res.status(400).json({ message: "Link de cadastro invalido." });
     }
 
+    const tokenEventoQuery = String(req.query?.evento ?? "").trim();
+    let eventoContexto = null;
+    if (tokenEventoQuery) {
+      const eventoRow = await buscarEventoAtivoPorToken(candidato.id, tokenEventoQuery);
+      if (!eventoRow) {
+        return res.status(400).json({ message: "Link de evento invalido ou evento encerrado." });
+      }
+      eventoContexto = {
+        id: eventoRow.id,
+        nome: eventoRow.nome,
+        token_cadastro: eventoRow.token_cadastro,
+      };
+    }
+
     let preselected_coordenador_id = null;
     if (chavesDivulgacao.length === 1) {
       const tokenChave = chavesDivulgacao[0];
@@ -366,10 +423,28 @@ router.get("/link-cadastro/:slugPublico/contexto", async (req, res, next) => {
       preselected_coordenador_id = vinculoToken.usuario_id;
     }
 
+    let coordenadoresLink = coordenadores;
+    if (eventoContexto) {
+      const coordsEvento = await listarCoordenadoresResumoPorEventoId(eventoContexto.id);
+      if (coordsEvento.length) {
+        coordenadoresLink = [...coordsEvento];
+        if (preselected_coordenador_id != null) {
+          const jaNaLista = coordenadoresLink.some((c) => c.id === preselected_coordenador_id);
+          if (!jaNaLista) {
+            const coordPre = coordenadores.find((c) => c.id === preselected_coordenador_id);
+            if (coordPre) coordenadoresLink.push(coordPre);
+          }
+        } else if (coordsEvento.length === 1) {
+          preselected_coordenador_id = coordsEvento[0].id;
+        }
+      }
+    }
+
     return res.json({
       candidato: { nome: candidato.nome, slug: candidato.slug },
-      coordenadores,
+      coordenadores: coordenadoresLink,
       preselected_coordenador_id,
+      evento: eventoContexto,
     });
   } catch (err) {
     next(err);
@@ -415,34 +490,71 @@ router.post("/link-cadastro/:slugPublico", async (req, res, next) => {
     }
 
     const idCoordenadorRaw = req.body?.id_coordenador;
-    const idCoordenador =
+    let idCoordenador =
       idCoordenadorRaw != null && idCoordenadorRaw !== ""
         ? Number(idCoordenadorRaw)
         : null;
-    if (!Number.isInteger(idCoordenador) || idCoordenador <= 0) {
-      return res.status(400).json({ message: "Selecione um coordenador válido." });
-    }
 
-    const vinculoCoord = await UsuarioCandidatoModel.findOne({
-      where: { candidato_id: candidato.id, usuario_id: idCoordenador },
-      include: [
-        {
-          model: UsuarioModel,
-          required: true,
-          attributes: ["id"],
+    const tokenEventoBody = String(req.body?.token_evento ?? "").trim();
+    let eventoCadastro = null;
+    if (tokenEventoBody) {
+      eventoCadastro = await buscarEventoAtivoPorToken(candidato.id, tokenEventoBody);
+      if (!eventoCadastro) {
+        return res.status(400).json({ message: "Evento invalido ou encerrado para este cadastro." });
+      }
+      const idsCoordsEvento = await idsCoordenadoresDoEvento(eventoCadastro.id);
+      if (idsCoordsEvento.length && idCoordenador != null && !idsCoordsEvento.includes(idCoordenador)) {
+        const coordValido = await UsuarioCandidatoModel.findOne({
+          where: { candidato_id: candidato.id, usuario_id: idCoordenador },
           include: [
             {
-              model: PapelModel,
+              model: UsuarioModel,
               required: true,
-              attributes: ["nome"],
-              where: { nome: "Coordenador" },
+              attributes: ["id"],
+              include: [
+                {
+                  model: PapelModel,
+                  required: true,
+                  attributes: [],
+                  where: { nome: "Coordenador" },
+                },
+              ],
             },
           ],
-        },
-      ],
-    });
-    if (!vinculoCoord) {
-      return res.status(400).json({ message: "Coordenador inválido para este candidato." });
+        });
+        if (!coordValido) {
+          return res.status(400).json({
+            message: "Coordenador invalido para este evento. Selecione um dos coordenadores do evento.",
+          });
+        }
+      }
+    }
+
+    if (idCoordenador != null) {
+      if (!Number.isInteger(idCoordenador) || idCoordenador <= 0) {
+        return res.status(400).json({ message: "Coordenador invalido." });
+      }
+      const vinculoCoord = await UsuarioCandidatoModel.findOne({
+        where: { candidato_id: candidato.id, usuario_id: idCoordenador },
+        include: [
+          {
+            model: UsuarioModel,
+            required: true,
+            attributes: ["id"],
+            include: [
+              {
+                model: PapelModel,
+                required: true,
+                attributes: ["nome"],
+                where: { nome: "Coordenador" },
+              },
+            ],
+          },
+        ],
+      });
+      if (!vinculoCoord) {
+        return res.status(400).json({ message: "Coordenador invalido para este candidato." });
+      }
     }
 
     const cep = limparNumeros(endereco.cep || "").slice(0, 8);
@@ -497,12 +609,16 @@ router.post("/link-cadastro/:slugPublico", async (req, res, next) => {
           termo_hash: hashTermo(TERMO_CONSENTIMENTO_ATUAL.texto),
           aceito: true,
           aceito_em: new Date(),
-          origem: "link-cadastro-publico",
+          origem: eventoCadastro ? "link-cadastro-evento" : "link-cadastro-publico",
           ip_origem: ipOrigem || null,
           user_agent: userAgent,
         },
         { transaction },
       );
+
+      if (eventoCadastro) {
+        await vincularPessoaAoEvento(eventoCadastro.id, pessoa.id, transaction);
+      }
 
       return pessoa;
     });
@@ -670,12 +786,28 @@ router.post("/", authBearerCandidatoObrigatorio(), async (req, res, next) => {
 
 router.post("/importar-csv", authBearerCandidatoObrigatorio(), async (req, res, next) => {
   try {
-    if (ehCoordenador(req)) {
-      return res.status(403).json({ message: "Operação reservada ao administrador." });
-    }
     const registros = Array.isArray(req.body?.registros) ? req.body.registros : [];
     if (!registros.length) {
       return res.status(400).json({ message: "Arquivo CSV sem registros válidos." });
+    }
+
+    const eventoIdRaw = req.body?.evento_id;
+    let eventoImportacao = null;
+    if (eventoIdRaw != null && eventoIdRaw !== "") {
+      const eventoId = Number(eventoIdRaw);
+      if (!Number.isInteger(eventoId) || eventoId <= 0) {
+        return res.status(400).json({ message: "Evento invalido." });
+      }
+      eventoImportacao = await EventoModel.findOne({
+        where: { id: eventoId, candidatoId: req.auth.CandidatoId },
+      });
+      if (!eventoImportacao) {
+        return res.status(404).json({ message: "Evento nao encontrado." });
+      }
+    }
+
+    if (ehCoordenador(req) && !eventoImportacao) {
+      return res.status(403).json({ message: "Operação reservada ao administrador." });
     }
 
     const payload = registros
@@ -734,21 +866,31 @@ router.post("/importar-csv", authBearerCandidatoObrigatorio(), async (req, res, 
     }
 
     const pessoasExistentes = await PessoaModel.findAll({
-      attributes: ["nome", "whatsapp"],
+      attributes: ["id", "nome", "whatsapp"],
       where: { candidatoId: req.auth.CandidatoId },
     });
 
     const nomesNormalizadosExistentes = new Set();
     /** @type {Map<string, string>} whatsapp normalizado → nome já cadastrado */
     const whatsappsNormalizadosExistentes = new Map();
+    /** @type {Map<string, number>} nome normalizado → id pessoa */
+    const idsPorNomeNormalizado = new Map();
+    /** @type {Map<string, number>} whatsapp normalizado → id pessoa */
+    const idsPorWhatsappNormalizado = new Map();
 
     for (const pessoa of pessoasExistentes) {
       const nomeNorm = normalizarTexto(pessoa.nome);
-      if (nomeNorm) nomesNormalizadosExistentes.add(nomeNorm);
+      if (nomeNorm) {
+        nomesNormalizadosExistentes.add(nomeNorm);
+        if (!idsPorNomeNormalizado.has(nomeNorm)) {
+          idsPorNomeNormalizado.set(nomeNorm, pessoa.id);
+        }
+      }
 
       const whatsappNorm = normalizarWhatsappComparacao(pessoa.whatsapp);
       if (whatsappNorm && !whatsappsNormalizadosExistentes.has(whatsappNorm)) {
         whatsappsNormalizadosExistentes.set(whatsappNorm, String(pessoa.nome || "").trim());
+        idsPorWhatsappNormalizado.set(whatsappNorm, pessoa.id);
       }
     }
 
@@ -756,6 +898,7 @@ router.post("/importar-csv", authBearerCandidatoObrigatorio(), async (req, res, 
     let duplicadosIgnorados = 0;
     const nomesDuplicados = [];
     const registrosNaoImportados = [];
+    const idsVincularEvento = new Set();
 
     for (const item of payload) {
       const nomeNormalizado = normalizarTexto(item.nome);
@@ -768,6 +911,10 @@ router.post("/importar-csv", authBearerCandidatoObrigatorio(), async (req, res, 
           motivo: "nome_duplicado",
           cadastro_existente: null,
         });
+        if (eventoImportacao && nomeNormalizado) {
+          const pid = idsPorNomeNormalizado.get(nomeNormalizado);
+          if (pid) idsVincularEvento.add(pid);
+        }
         continue;
       }
 
@@ -780,6 +927,10 @@ router.post("/importar-csv", authBearerCandidatoObrigatorio(), async (req, res, 
           motivo: "whatsapp_duplicado",
           cadastro_existente: whatsappsNormalizadosExistentes.get(whatsappNorm) || null,
         });
+        if (eventoImportacao) {
+          const pid = idsPorWhatsappNormalizado.get(whatsappNorm);
+          if (pid) idsVincularEvento.add(pid);
+        }
         continue;
       }
 
@@ -790,7 +941,7 @@ router.post("/importar-csv", authBearerCandidatoObrigatorio(), async (req, res, 
       payloadSemDuplicados.push(item);
     }
 
-    if (!payloadSemDuplicados.length) {
+    if (!payloadSemDuplicados.length && (!eventoImportacao || !idsVincularEvento.size)) {
       return res.status(400).json({
         message:
           "Nenhum registro novo para importar. Todos os registros já existem (nome ou WhatsApp repetido).",
@@ -800,6 +951,7 @@ router.post("/importar-csv", authBearerCandidatoObrigatorio(), async (req, res, 
     }
 
     const idsImportados = [];
+    let vinculadosEvento = 0;
     await sequelize.transaction(async (transaction) => {
       for (const item of payloadSemDuplicados) {
         const pessoa = await PessoaModel.create(
@@ -816,6 +968,9 @@ router.post("/importar-csv", authBearerCandidatoObrigatorio(), async (req, res, 
           { transaction },
         );
         idsImportados.push(pessoa.id);
+        if (eventoImportacao) {
+          idsVincularEvento.add(pessoa.id);
+        }
 
         await EnderecoModel.create(
           {
@@ -826,6 +981,17 @@ router.post("/importar-csv", authBearerCandidatoObrigatorio(), async (req, res, 
           { transaction },
         );
       }
+
+      if (eventoImportacao) {
+        for (const pessoaId of idsVincularEvento) {
+          const antes = await EventoPessoaModel.findOne({
+            where: { evento_id: eventoImportacao.id, pessoa_id: pessoaId },
+            transaction,
+          });
+          await vincularPessoaAoEvento(eventoImportacao.id, pessoaId, transaction);
+          if (!antes) vinculadosEvento += 1;
+        }
+      }
     });
 
     const semWhatsapp = payloadSemDuplicados.filter((item) => !item.whatsapp).length;
@@ -835,14 +1001,27 @@ router.post("/importar-csv", authBearerCandidatoObrigatorio(), async (req, res, 
       semWhatsapp > 0
         ? ` Atenção: ${semWhatsapp} registro(s) ficaram sem telefone (coluna não encontrada ou vazia no CSV).`
         : "";
+    const sufixoEvento =
+      eventoImportacao && vinculadosEvento > 0
+        ? ` ${vinculadosEvento} contato(s) vinculado(s) ao evento.`
+        : "";
+
+    const totalImportados = payloadSemDuplicados.length;
+    const mensagemBase =
+      totalImportados > 0
+        ? `${totalImportados} registro(s) importado(s) com sucesso.`
+        : vinculadosEvento > 0
+          ? `${vinculadosEvento} contato(s) existente(s) vinculado(s) ao evento.`
+          : "Importação concluída.";
 
     return res.status(201).json({
-      message: `${payloadSemDuplicados.length} registro(s) importado(s) com sucesso.${sufixoIgnorados}${sufixoSemTelefone}`,
-      total: payloadSemDuplicados.length,
+      message: `${mensagemBase}${sufixoIgnorados}${sufixoSemTelefone}${sufixoEvento}`,
+      total: totalImportados,
       nomes_duplicados: nomesDuplicados,
       registros_nao_importados: registrosNaoImportados,
       ids_importados: idsImportados,
       sem_whatsapp: semWhatsapp,
+      vinculados_evento: vinculadosEvento,
     });
   } catch (err) {
     next(err);
