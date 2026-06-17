@@ -17,6 +17,17 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.TEXT,
         allowNull: false,
       },
+      tipo_mensagem: {
+        type: DataTypes.STRING(20),
+        allowNull: false,
+        defaultValue: "texto",
+        field: "tipo_mensagem",
+      },
+      opcoes_botoes: {
+        type: DataTypes.JSONB,
+        allowNull: true,
+        field: "opcoes_botoes",
+      },
       usuario_id: {
         type: DataTypes.INTEGER,
         allowNull: true,

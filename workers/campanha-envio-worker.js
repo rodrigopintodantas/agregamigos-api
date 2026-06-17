@@ -93,7 +93,7 @@ function aplicarVariaveisMensagem(template, pessoa) {
     .replace(/XXXX/g, nomeCompleto);
 }
 
-async function enviarViaApi(numero, mensagem, candidatoId, whatsappCanalId) {
+async function enviarViaApi(numero, mensagem, candidatoId, whatsappCanalId, opcoesBotoes = null) {
   const apiUrl = INTERNAL_API_URL_RESOLVIDA;
   const internalApiKey = process.env.INTERNAL_API_KEY || "dev-local-key";
   const cid = Number(candidatoId);
@@ -115,6 +115,7 @@ async function enviarViaApi(numero, mensagem, candidatoId, whatsappCanalId) {
     body: JSON.stringify({
       numero,
       mensagem,
+      opcoes_botoes: opcoesBotoes,
       candidato_id: cid,
       whatsapp_canal_id: canalId,
     }),
@@ -194,7 +195,7 @@ async function processarEnvio(job) {
   const destinatario = await CampanhaDestinatarioModel.findOne({
     where: { id: destinatarioId, campanha_id: campanhaId },
     include: [
-      { model: ModeloMensagemModel, attributes: ["id", "corpo"] },
+      { model: ModeloMensagemModel, attributes: ["id", "corpo", "tipo_mensagem", "opcoes_botoes"] },
       {
         model: PessoaModel,
         attributes: ["id", "nome"],
@@ -252,10 +253,12 @@ async function processarEnvio(job) {
     return;
   }
 
-  const mensagem = aplicarVariaveisMensagem(
-    destinatario.ModeloMensagemModel?.corpo,
-    destinatario.PessoaModel,
-  ).trim();
+  const modelo = destinatario.ModeloMensagemModel;
+  const mensagem = aplicarVariaveisMensagem(modelo?.corpo, destinatario.PessoaModel).trim();
+  const opcoesBotoes =
+    String(modelo?.tipo_mensagem || "").toLowerCase() === "botoes"
+      ? (Array.isArray(modelo?.opcoes_botoes) ? modelo.opcoes_botoes : [])
+      : null;
   if (!mensagem) {
     await destinatario.update({
       status: "erro",
@@ -276,6 +279,7 @@ async function processarEnvio(job) {
       mensagem,
       campanha.candidatoId,
       campanha.whatsapp_canal_id,
+      opcoesBotoes,
     );
     const whatsappArmazenar = String(envio.whatsappMatch || envio.numeroNormalizado || numero || "")
       .replace(/\D/g, "")

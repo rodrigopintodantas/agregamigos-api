@@ -5,8 +5,11 @@ const {
   default: makeWASocket,
   DisconnectReason,
   fetchLatestBaileysVersion,
+  generateMessageIDV2,
+  proto,
   useMultiFileAuthState,
 } = require("@whiskeysockets/baileys");
+const { normalizarOpcoesBotoes } = require("../utils/modelo-mensagem-botoes");
 const { anexarCapturaRespostas } = require("./whatsapp-captura-respostas-campanha");
 const { persistirEstadoCanal, formatarNumeroCanal } = require("./whatsapp-canal-db");
 
@@ -286,7 +289,7 @@ class WhatsappPorCanal {
     return this.connect(nomePerfil || this.nomeCanal);
   }
 
-  async sendText(numero, mensagem) {
+  async sendText(numero, mensagem, opcoesBotoes = null) {
     if (!this.sock || !this.estado.conectado) {
       throw new Error("Canal WhatsApp nao conectado.");
     }
@@ -307,17 +310,42 @@ class WhatsappPorCanal {
       throw new Error("Mensagem vazia para envio.");
     }
 
-    const resultado = await this.sock.sendMessage(jidResolvido, { text: texto });
-    if (!resultado?.key?.id || !resultado?.key?.remoteJid) {
-      throw new Error("WhatsApp nao confirmou o envio da mensagem.");
+    const botoes = normalizarOpcoesBotoes(opcoesBotoes);
+    let messageId;
+    let remoteJid = jidResolvido;
+
+    if (botoes.length >= 2) {
+      const buttons = botoes.map((label, idx) => ({
+        buttonId: `mdl_${idx}_${Date.now()}`,
+        buttonText: { displayText: label },
+        type: proto.Message.ButtonsMessage.Button.Type.RESPONSE,
+      }));
+      const waMessage = {
+        buttonsMessage: {
+          contentText: texto,
+          footerText: "",
+          buttons,
+          headerType: proto.Message.ButtonsMessage.HeaderType.EMPTY,
+        },
+      };
+      messageId = generateMessageIDV2(this.sock.user?.id);
+      await this.sock.relayMessage(jidResolvido, waMessage, { messageId });
+    } else {
+      const resultado = await this.sock.sendMessage(jidResolvido, { text: texto });
+      if (!resultado?.key?.id || !resultado?.key?.remoteJid) {
+        throw new Error("WhatsApp nao confirmou o envio da mensagem.");
+      }
+      messageId = resultado.key.id;
+      remoteJid = resultado.key.remoteJid;
     }
+
     return {
       numeroNormalizado: digits,
       whatsappMatch,
       jidDigitado,
       jidResolvido,
-      messageId: resultado.key.id,
-      remoteJid: resultado.key.remoteJid,
+      messageId,
+      remoteJid,
     };
   }
 }
@@ -369,8 +397,8 @@ class WhatsappBaileysManager {
     return this.getOrCreate(canalId, candidatoId, nomeCanal).trocarTelefone(nomePerfil);
   }
 
-  async sendText(canalId, candidatoId, numero, mensagem, nomeCanal) {
-    return this.getOrCreate(canalId, candidatoId, nomeCanal).sendText(numero, mensagem);
+  async sendText(canalId, candidatoId, numero, mensagem, nomeCanal, opcoesBotoes = null) {
+    return this.getOrCreate(canalId, candidatoId, nomeCanal).sendText(numero, mensagem, opcoesBotoes);
   }
 
   normalizarNumeroBrasil(numero) {

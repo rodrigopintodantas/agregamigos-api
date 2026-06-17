@@ -281,6 +281,7 @@ router.post("/send-interno", validarChaveInterna, async (req, res, next) => {
   try {
     const numero = String(req.body?.numero || "");
     const mensagem = String(req.body?.mensagem || "");
+    const opcoes_botoes = Array.isArray(req.body?.opcoes_botoes) ? req.body.opcoes_botoes : null;
     const candidatoId = Number(req.body?.candidato_id);
     const canalId = Number(req.body?.whatsapp_canal_id);
     if (!Number.isInteger(candidatoId) || candidatoId <= 0) {
@@ -303,6 +304,7 @@ router.post("/send-interno", validarChaveInterna, async (req, res, next) => {
       numero,
       mensagem,
       canal.nome,
+      opcoes_botoes,
     );
     return res.status(200).json({
       message: "Mensagem enviada.",
