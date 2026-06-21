@@ -289,7 +289,7 @@ async function candidatoPorSlugPublico(res, slugParam) {
   }
   const candidato = await CandidatoModel.findOne({
     where: { slug },
-    attributes: ["id", "slug", "nome"],
+    attributes: ["id", "slug", "nome", "imagemOg"],
   });
   if (!candidato) {
     res.status(404).json({ message: "Candidato nao encontrado." });
@@ -441,7 +441,11 @@ router.get("/link-cadastro/:slugPublico/contexto", async (req, res, next) => {
     }
 
     return res.json({
-      candidato: { nome: candidato.nome, slug: candidato.slug },
+      candidato: {
+        nome: candidato.nome,
+        slug: candidato.slug,
+        imagem_og: candidato.imagemOg ?? null,
+      },
       coordenadores: coordenadoresLink,
       preselected_coordenador_id,
       evento: eventoContexto,

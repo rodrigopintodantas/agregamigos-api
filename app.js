@@ -32,6 +32,8 @@ app.use((req, res, next) => {
 app.use(express.urlencoded({ extended: true, limit: "5mb" }));
 app.use(cookieParser());
 
+app.use("/og", require("./routes/og"));
+
 app.use("/api", indexRouter);
 app.use(errorHandler);
 

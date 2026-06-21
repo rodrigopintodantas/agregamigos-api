@@ -18,6 +18,11 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
         unique: true,
       },
+      imagemOg: {
+        type: DataTypes.STRING(500),
+        allowNull: true,
+        field: "imagem_og",
+      },
     },
     { freezeTableName: true, tableName: "candidato", timestamps: true },
   );
