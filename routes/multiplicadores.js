@@ -8,6 +8,7 @@ const {
   PapelModel,
 } = require("../models");
 const { authorize, authBearerCandidatoObrigatorio } = require("../auth/authorize");
+const { listarDistribuicaoPessoasPorCoordenador } = require("../services/coordenador-bairro");
 
 const router = express.Router();
 const apenasAdmin = [authBearerCandidatoObrigatorio(), authorize(["Administrador"])];
@@ -106,6 +107,8 @@ router.get("/painel", ...apenasAdmin, async (req, res, next) => {
         total: c.total_cadastros,
       }));
 
+    const distribuicao_coordenador = await listarDistribuicaoPessoasPorCoordenador(candidatoId);
+
     const eventosRows = await EventoModel.findAll({
       where: { candidatoId },
       attributes: ["id", "nome", "total_inscritos"],
@@ -172,6 +175,7 @@ router.get("/painel", ...apenasAdmin, async (req, res, next) => {
       },
       coordenadores: coordenadoresPainel,
       comparativo,
+      distribuicao_coordenador,
       comparativo_eventos,
       evolucao_mensal: {
         meses,

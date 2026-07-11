@@ -17,6 +17,11 @@ const {
   listarCoordenadoresResumoPorEventoId,
   idsCoordenadoresDoEvento,
 } = require("../services/evento-coordenador");
+const {
+  listarBairrosVinculados,
+  wherePessoasListagemCoordenador,
+  sqlFiltroCoordenadorPessoas,
+} = require("../services/coordenador-bairro");
 const { authBearerCandidatoObrigatorio } = require("../auth/authorize");
 
 const router = express.Router();
@@ -41,10 +46,10 @@ function normalizarEngajamentoWhatsapp(value) {
   return ENGAJAMENTOS_WHATSAPP_VALIDOS.has(v) ? v : null;
 }
 
-function wherePessoasListagem(req) {
+async function wherePessoasListagem(req) {
   const base = { candidatoId: req.auth.CandidatoId };
   if (ehCoordenador(req)) {
-    return { ...base, idCoordenador: req.auth.UsuarioId };
+    return wherePessoasListagemCoordenador(req.auth.CandidatoId, req.auth.UsuarioId);
   }
   return base;
 }
@@ -639,7 +644,7 @@ router.post("/link-cadastro/:slugPublico", async (req, res, next) => {
 router.get("/", authBearerCandidatoObrigatorio(), async (req, res, next) => {
   try {
     const pessoas = await PessoaModel.findAll({
-      where: wherePessoasListagem(req),
+      where: await wherePessoasListagem(req),
       include: [
         { model: EnderecoModel, required: false },
         { model: CandidatoModel, attributes: ["nome", "slug"], required: true },
@@ -683,10 +688,30 @@ router.get("/estatisticas", authBearerCandidatoObrigatorio(), async (req, res, n
     const cid = req.auth.CandidatoId;
     const coord = ehCoordenador(req);
     const uid = req.auth.UsuarioId;
-    const filtroCoord = coord ? " AND p.id_coordenador = :uid " : "";
-    const totalCadastros = await PessoaModel.count({
-      where: wherePessoasListagem(req),
-    });
+    let filtroCoord = "";
+    const replacements = { cid };
+
+    if (coord) {
+      const bairros = await listarBairrosVinculados(cid, uid);
+      const filtro = sqlFiltroCoordenadorPessoas(uid, bairros);
+      filtroCoord = filtro.sql;
+      Object.assign(replacements, filtro.replacements);
+    }
+
+    const totalCadastros = coord
+      ? await PessoaModel.count({
+          where: { candidatoId: cid, idCoordenador: uid },
+        })
+      : await PessoaModel.count({
+          where: { candidatoId: cid },
+        });
+
+    const totalCadastrosResponsavel = coord
+      ? await PessoaModel.count({
+          where: await wherePessoasListagem(req),
+        })
+      : null;
+
     const bairrosAgg = await sequelize.query(
       `
       SELECT TRIM(e.bairro) AS bairro, COUNT(*)::integer AS quantidade
@@ -700,12 +725,13 @@ router.get("/estatisticas", authBearerCandidatoObrigatorio(), async (req, res, n
       `,
       {
         type: QueryTypes.SELECT,
-        replacements: coord ? { cid, uid } : { cid },
+        replacements,
       },
     );
 
     return res.json({
       total_cadastros: totalCadastros,
+      total_cadastros_responsavel: totalCadastrosResponsavel,
       bairros: bairrosAgg.map((row) => ({
         bairro: row.bairro,
         quantidade: Number(row.quantidade),
