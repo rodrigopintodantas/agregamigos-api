@@ -76,6 +76,12 @@ module.exports = (sequelize, DataTypes) => {
       onDelete: "RESTRICT",
       onUpdate: "CASCADE",
     });
+    PessoaModel.belongsToMany(models.GrupoModel, {
+      through: models.GrupoPessoaModel,
+      foreignKey: { name: "pessoa_id", field: "pessoa_id" },
+      otherKey: { name: "grupo_id", field: "grupo_id" },
+      as: "GruposModel",
+    });
   };
 
   return PessoaModel;

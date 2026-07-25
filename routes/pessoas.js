@@ -12,11 +12,17 @@ const {
   PapelModel,
   EventoModel,
   EventoPessoaModel,
+  GrupoModel,
+  GrupoPessoaModel,
 } = require("../models");
 const {
   listarCoordenadoresResumoPorEventoId,
   idsCoordenadoresDoEvento,
 } = require("../services/evento-coordenador");
+const {
+  listarCoordenadoresResumoPorGrupoId,
+  idsCoordenadoresDoGrupo,
+} = require("../services/grupo-coordenador");
 const {
   listarBairrosVinculados,
   wherePessoasListagemCoordenador,
@@ -304,12 +310,24 @@ async function candidatoPorSlugPublico(res, slugParam) {
 }
 
 /** Nomes de query reservados; demais chaves "flag" alfanuméricas são tratadas como token de divulgação. */
-const QUERY_PARAMS_RESERVADOS_LINK_CADASTRO = new Set(["coordenador", "evento"]);
+const QUERY_PARAMS_RESERVADOS_LINK_CADASTRO = new Set(["coordenador", "evento", "grupo"]);
 
 async function buscarEventoAtivoPorToken(candidatoId, token) {
   const t = String(token ?? "").trim();
   if (!t) return null;
   return EventoModel.findOne({
+    where: {
+      candidatoId,
+      token_cadastro: t,
+      status: { [Op.ne]: "encerrado" },
+    },
+  });
+}
+
+async function buscarGrupoAtivoPorToken(candidatoId, token) {
+  const t = String(token ?? "").trim();
+  if (!t) return null;
+  return GrupoModel.findOne({
     where: {
       candidatoId,
       token_cadastro: t,
@@ -332,6 +350,76 @@ async function vincularPessoaAoEvento(eventoId, pessoaId, transaction) {
     });
   }
   return vinculo;
+}
+
+async function vincularPessoaAoGrupo(grupoId, pessoaId, transaction) {
+  const [vinculo, created] = await GrupoPessoaModel.findOrCreate({
+    where: { grupo_id: grupoId, pessoa_id: pessoaId },
+    defaults: { grupo_id: grupoId, pessoa_id: pessoaId },
+    transaction,
+  });
+  if (created) {
+    await GrupoModel.increment("total_inscritos", {
+      by: 1,
+      where: { id: grupoId },
+      transaction,
+    });
+  }
+  return vinculo;
+}
+
+function parseGrupoIds(body) {
+  const raw = body?.id_grupos;
+  if (!Array.isArray(raw)) return null;
+  return [
+    ...new Set(
+      raw
+        .map((v) => Number(v))
+        .filter((id) => Number.isInteger(id) && id > 0),
+    ),
+  ];
+}
+
+async function validarGruposDoCandidato(candidatoId, ids, transaction) {
+  if (!ids.length) return true;
+  const encontrados = await GrupoModel.findAll({
+    where: { id: ids, candidatoId },
+    attributes: ["id"],
+    transaction,
+  });
+  return encontrados.length === ids.length;
+}
+
+async function sincronizarGruposDaPessoa(pessoaId, grupoIds, transaction) {
+  const atuais = await GrupoPessoaModel.findAll({
+    where: { pessoa_id: pessoaId },
+    attributes: ["grupo_id"],
+    transaction,
+    raw: true,
+  });
+  const atuaisSet = new Set(atuais.map((r) => Number(r.grupo_id)));
+  const novosSet = new Set(grupoIds);
+
+  const remover = [...atuaisSet].filter((id) => !novosSet.has(id));
+  const adicionar = [...novosSet].filter((id) => !atuaisSet.has(id));
+
+  for (const grupoId of remover) {
+    const removed = await GrupoPessoaModel.destroy({
+      where: { grupo_id: grupoId, pessoa_id: pessoaId },
+      transaction,
+    });
+    if (removed > 0) {
+      await GrupoModel.decrement("total_inscritos", {
+        by: 1,
+        where: { id: grupoId },
+        transaction,
+      });
+    }
+  }
+
+  for (const grupoId of adicionar) {
+    await vincularPessoaAoGrupo(grupoId, pessoaId, transaction);
+  }
 }
 
 function chavesDivulgacaoLinkCadastroNaQuery(req) {
@@ -398,6 +486,20 @@ router.get("/link-cadastro/:slugPublico/contexto", async (req, res, next) => {
       };
     }
 
+    const tokenGrupoQuery = String(req.query?.grupo ?? "").trim();
+    let grupoContexto = null;
+    if (tokenGrupoQuery) {
+      const grupoRow = await buscarGrupoAtivoPorToken(candidato.id, tokenGrupoQuery);
+      if (!grupoRow) {
+        return res.status(400).json({ message: "Link de grupo invalido ou grupo encerrado." });
+      }
+      grupoContexto = {
+        id: grupoRow.id,
+        nome: grupoRow.nome,
+        token_cadastro: grupoRow.token_cadastro,
+      };
+    }
+
     let preselected_coordenador_id = null;
     if (chavesDivulgacao.length === 1) {
       const tokenChave = chavesDivulgacao[0];
@@ -429,19 +531,28 @@ router.get("/link-cadastro/:slugPublico/contexto", async (req, res, next) => {
     }
 
     let coordenadoresLink = coordenadores;
+    const contextoComCoords = eventoContexto || grupoContexto;
     if (eventoContexto) {
       const coordsEvento = await listarCoordenadoresResumoPorEventoId(eventoContexto.id);
       if (coordsEvento.length) {
         coordenadoresLink = [...coordsEvento];
-        if (preselected_coordenador_id != null) {
-          const jaNaLista = coordenadoresLink.some((c) => c.id === preselected_coordenador_id);
-          if (!jaNaLista) {
-            const coordPre = coordenadores.find((c) => c.id === preselected_coordenador_id);
-            if (coordPre) coordenadoresLink.push(coordPre);
-          }
-        } else if (coordsEvento.length === 1) {
-          preselected_coordenador_id = coordsEvento[0].id;
+      }
+    } else if (grupoContexto) {
+      const coordsGrupo = await listarCoordenadoresResumoPorGrupoId(grupoContexto.id);
+      if (coordsGrupo.length) {
+        coordenadoresLink = [...coordsGrupo];
+      }
+    }
+
+    if (contextoComCoords && (eventoContexto || grupoContexto)) {
+      if (preselected_coordenador_id != null) {
+        const jaNaLista = coordenadoresLink.some((c) => c.id === preselected_coordenador_id);
+        if (!jaNaLista) {
+          const coordPre = coordenadores.find((c) => c.id === preselected_coordenador_id);
+          if (coordPre) coordenadoresLink.push(coordPre);
         }
+      } else if (coordenadoresLink.length === 1 && coordenadoresLink !== coordenadores) {
+        preselected_coordenador_id = coordenadoresLink[0].id;
       }
     }
 
@@ -454,6 +565,7 @@ router.get("/link-cadastro/:slugPublico/contexto", async (req, res, next) => {
       coordenadores: coordenadoresLink,
       preselected_coordenador_id,
       evento: eventoContexto,
+      grupo: grupoContexto,
     });
   } catch (err) {
     next(err);
@@ -539,6 +651,41 @@ router.post("/link-cadastro/:slugPublico", async (req, res, next) => {
       }
     }
 
+    const tokenGrupoBody = String(req.body?.token_grupo ?? "").trim();
+    let grupoCadastro = null;
+    if (tokenGrupoBody) {
+      grupoCadastro = await buscarGrupoAtivoPorToken(candidato.id, tokenGrupoBody);
+      if (!grupoCadastro) {
+        return res.status(400).json({ message: "Grupo invalido ou encerrado para este cadastro." });
+      }
+      const idsCoordsGrupo = await idsCoordenadoresDoGrupo(grupoCadastro.id);
+      if (idsCoordsGrupo.length && idCoordenador != null && !idsCoordsGrupo.includes(idCoordenador)) {
+        const coordValido = await UsuarioCandidatoModel.findOne({
+          where: { candidato_id: candidato.id, usuario_id: idCoordenador },
+          include: [
+            {
+              model: UsuarioModel,
+              required: true,
+              attributes: ["id"],
+              include: [
+                {
+                  model: PapelModel,
+                  required: true,
+                  attributes: [],
+                  where: { nome: "Coordenador" },
+                },
+              ],
+            },
+          ],
+        });
+        if (!coordValido) {
+          return res.status(400).json({
+            message: "Coordenador invalido para este grupo. Selecione um dos coordenadores do grupo.",
+          });
+        }
+      }
+    }
+
     if (idCoordenador != null) {
       if (!Number.isInteger(idCoordenador) || idCoordenador <= 0) {
         return res.status(400).json({ message: "Coordenador invalido." });
@@ -618,7 +765,11 @@ router.post("/link-cadastro/:slugPublico", async (req, res, next) => {
           termo_hash: hashTermo(TERMO_CONSENTIMENTO_ATUAL.texto),
           aceito: true,
           aceito_em: new Date(),
-          origem: eventoCadastro ? "link-cadastro-evento" : "link-cadastro-publico",
+          origem: eventoCadastro
+            ? "link-cadastro-evento"
+            : grupoCadastro
+              ? "link-cadastro-grupo"
+              : "link-cadastro-publico",
           ip_origem: ipOrigem || null,
           user_agent: userAgent,
         },
@@ -627,6 +778,9 @@ router.post("/link-cadastro/:slugPublico", async (req, res, next) => {
 
       if (eventoCadastro) {
         await vincularPessoaAoEvento(eventoCadastro.id, pessoa.id, transaction);
+      }
+      if (grupoCadastro) {
+        await vincularPessoaAoGrupo(grupoCadastro.id, pessoa.id, transaction);
       }
 
       return pessoa;
@@ -648,6 +802,13 @@ router.get("/", authBearerCandidatoObrigatorio(), async (req, res, next) => {
       include: [
         { model: EnderecoModel, required: false },
         { model: CandidatoModel, attributes: ["nome", "slug"], required: true },
+        {
+          model: GrupoModel,
+          as: "GruposModel",
+          attributes: ["id", "nome"],
+          through: { attributes: [] },
+          required: false,
+        },
       ],
       order: [["nome", "ASC"]],
     });
@@ -664,6 +825,9 @@ router.get("/", authBearerCandidatoObrigatorio(), async (req, res, next) => {
         indicacao: p.indicacao ?? null,
         candidato_nome: p.CandidatoModel?.nome ?? null,
         candidato_slug: p.CandidatoModel?.slug ?? null,
+        grupos: (p.GruposModel ?? [])
+          .map((g) => ({ id: g.id, nome: g.nome }))
+          .sort((a, b) => String(a.nome).localeCompare(String(b.nome), "pt")),
         endereco: p.EnderecoModel
           ? {
               cep: p.EnderecoModel.cep ?? null,
@@ -836,12 +1000,29 @@ router.post("/importar-csv", authBearerCandidatoObrigatorio(), async (req, res, 
       }
     }
 
-    if (ehCoordenador(req) && !eventoImportacao) {
+    const grupoIdRaw = req.body?.grupo_id;
+    let grupoImportacao = null;
+    if (grupoIdRaw != null && grupoIdRaw !== "") {
+      const grupoId = Number(grupoIdRaw);
+      if (!Number.isInteger(grupoId) || grupoId <= 0) {
+        return res.status(400).json({ message: "Grupo invalido." });
+      }
+      grupoImportacao = await GrupoModel.findOne({
+        where: { id: grupoId, candidatoId: req.auth.CandidatoId },
+      });
+      if (!grupoImportacao) {
+        return res.status(404).json({ message: "Grupo nao encontrado." });
+      }
+    }
+
+    const vinculoImportacao = eventoImportacao || grupoImportacao;
+
+    if (ehCoordenador(req) && !vinculoImportacao) {
       return res.status(403).json({ message: "Operação reservada ao administrador." });
     }
 
     const idCoordenadorImportacao =
-      ehCoordenador(req) && eventoImportacao ? Number(req.auth.UsuarioId) : null;
+      ehCoordenador(req) && vinculoImportacao ? Number(req.auth.UsuarioId) : null;
     const coordenadorImportacaoValido =
       idCoordenadorImportacao != null &&
       Number.isInteger(idCoordenadorImportacao) &&
@@ -936,6 +1117,7 @@ router.post("/importar-csv", authBearerCandidatoObrigatorio(), async (req, res, 
     const nomesDuplicados = [];
     const registrosNaoImportados = [];
     const idsVincularEvento = new Set();
+    const idsVincularGrupo = new Set();
 
     for (const item of payload) {
       const nomeNormalizado = normalizarTexto(item.nome);
@@ -948,9 +1130,12 @@ router.post("/importar-csv", authBearerCandidatoObrigatorio(), async (req, res, 
           motivo: "nome_duplicado",
           cadastro_existente: null,
         });
-        if (eventoImportacao && nomeNormalizado) {
+        if (nomeNormalizado) {
           const pid = idsPorNomeNormalizado.get(nomeNormalizado);
-          if (pid) idsVincularEvento.add(pid);
+          if (pid) {
+            if (eventoImportacao) idsVincularEvento.add(pid);
+            if (grupoImportacao) idsVincularGrupo.add(pid);
+          }
         }
         continue;
       }
@@ -964,9 +1149,10 @@ router.post("/importar-csv", authBearerCandidatoObrigatorio(), async (req, res, 
           motivo: "whatsapp_duplicado",
           cadastro_existente: whatsappsNormalizadosExistentes.get(whatsappNorm) || null,
         });
-        if (eventoImportacao) {
-          const pid = idsPorWhatsappNormalizado.get(whatsappNorm);
-          if (pid) idsVincularEvento.add(pid);
+        const pid = idsPorWhatsappNormalizado.get(whatsappNorm);
+        if (pid) {
+          if (eventoImportacao) idsVincularEvento.add(pid);
+          if (grupoImportacao) idsVincularGrupo.add(pid);
         }
         continue;
       }
@@ -978,7 +1164,11 @@ router.post("/importar-csv", authBearerCandidatoObrigatorio(), async (req, res, 
       payloadSemDuplicados.push(item);
     }
 
-    if (!payloadSemDuplicados.length && (!eventoImportacao || !idsVincularEvento.size)) {
+    if (
+      !payloadSemDuplicados.length &&
+      (!eventoImportacao || !idsVincularEvento.size) &&
+      (!grupoImportacao || !idsVincularGrupo.size)
+    ) {
       return res.status(400).json({
         message:
           "Nenhum registro novo para importar. Todos os registros já existem (nome ou WhatsApp repetido).",
@@ -989,6 +1179,7 @@ router.post("/importar-csv", authBearerCandidatoObrigatorio(), async (req, res, 
 
     const idsImportados = [];
     let vinculadosEvento = 0;
+    let vinculadosGrupo = 0;
     await sequelize.transaction(async (transaction) => {
       for (const item of payloadSemDuplicados) {
         const pessoa = await PessoaModel.create(
@@ -1009,6 +1200,9 @@ router.post("/importar-csv", authBearerCandidatoObrigatorio(), async (req, res, 
         if (eventoImportacao) {
           idsVincularEvento.add(pessoa.id);
         }
+        if (grupoImportacao) {
+          idsVincularGrupo.add(pessoa.id);
+        }
 
         await EnderecoModel.create(
           {
@@ -1020,12 +1214,13 @@ router.post("/importar-csv", authBearerCandidatoObrigatorio(), async (req, res, 
         );
       }
 
-      if (coordenadorImportacaoValido && idsVincularEvento.size) {
+      const idsParaCoordenador = new Set([...idsVincularEvento, ...idsVincularGrupo]);
+      if (coordenadorImportacaoValido && idsParaCoordenador.size) {
         await PessoaModel.update(
           { idCoordenador: idCoordenadorImportacao },
           {
             where: {
-              id: [...idsVincularEvento],
+              id: [...idsParaCoordenador],
               candidatoId: req.auth.CandidatoId,
             },
             transaction,
@@ -1043,6 +1238,17 @@ router.post("/importar-csv", authBearerCandidatoObrigatorio(), async (req, res, 
           if (!antes) vinculadosEvento += 1;
         }
       }
+
+      if (grupoImportacao) {
+        for (const pessoaId of idsVincularGrupo) {
+          const antes = await GrupoPessoaModel.findOne({
+            where: { grupo_id: grupoImportacao.id, pessoa_id: pessoaId },
+            transaction,
+          });
+          await vincularPessoaAoGrupo(grupoImportacao.id, pessoaId, transaction);
+          if (!antes) vinculadosGrupo += 1;
+        }
+      }
     });
 
     const semWhatsapp = payloadSemDuplicados.filter((item) => !item.whatsapp).length;
@@ -1056,23 +1262,28 @@ router.post("/importar-csv", authBearerCandidatoObrigatorio(), async (req, res, 
       eventoImportacao && vinculadosEvento > 0
         ? ` ${vinculadosEvento} contato(s) vinculado(s) ao evento.`
         : "";
+    const sufixoGrupo =
+      grupoImportacao && vinculadosGrupo > 0
+        ? ` ${vinculadosGrupo} contato(s) vinculado(s) ao grupo.`
+        : "";
 
     const totalImportados = payloadSemDuplicados.length;
     const mensagemBase =
       totalImportados > 0
         ? `${totalImportados} registro(s) importado(s) com sucesso.`
-        : vinculadosEvento > 0
-          ? `${vinculadosEvento} contato(s) existente(s) vinculado(s) ao evento.`
+        : vinculadosEvento > 0 || vinculadosGrupo > 0
+          ? `${vinculadosEvento + vinculadosGrupo} contato(s) existente(s) vinculado(s).`
           : "Importação concluída.";
 
     return res.status(201).json({
-      message: `${mensagemBase}${sufixoIgnorados}${sufixoSemTelefone}${sufixoEvento}`,
+      message: `${mensagemBase}${sufixoIgnorados}${sufixoSemTelefone}${sufixoEvento}${sufixoGrupo}`,
       total: totalImportados,
       nomes_duplicados: nomesDuplicados,
       registros_nao_importados: registrosNaoImportados,
       ids_importados: idsImportados,
       sem_whatsapp: semWhatsapp,
       vinculados_evento: vinculadosEvento,
+      vinculados_grupo: vinculadosGrupo,
     });
   } catch (err) {
     next(err);
@@ -1243,6 +1454,7 @@ router.put("/:id", authBearerCandidatoObrigatorio(), async (req, res, next) => {
     const indicacao = req.body?.indicacao != null ? String(req.body.indicacao).trim() : "";
     const endereco = req.body?.endereco ?? {};
     const engajamentoNorm = normalizarEngajamentoWhatsapp(req.body?.engajamento_whatsapp);
+    const idGrupos = parseGrupoIds(req.body);
 
     if (nome.length < 3) {
       return res.status(400).json({ message: "Informe nome com pelo menos 3 caracteres." });
@@ -1269,6 +1481,13 @@ router.put("/:id", authBearerCandidatoObrigatorio(), async (req, res, next) => {
     );
     if (duplicataWhatsapp) {
       return res.status(409).json({ message: mensagemWhatsappDuplicado(duplicataWhatsapp) });
+    }
+
+    if (idGrupos) {
+      const gruposOk = await validarGruposDoCandidato(req.auth.CandidatoId, idGrupos);
+      if (!gruposOk) {
+        return res.status(400).json({ message: "Um ou mais grupos sao invalidos para este candidato." });
+      }
     }
 
     const updated = await sequelize.transaction(async (transaction) => {
@@ -1317,6 +1536,10 @@ router.put("/:id", authBearerCandidatoObrigatorio(), async (req, res, next) => {
           },
           { transaction },
         );
+      }
+
+      if (idGrupos) {
+        await sincronizarGruposDaPessoa(pessoa.id, idGrupos, transaction);
       }
 
       return pessoa;

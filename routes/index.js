@@ -25,5 +25,6 @@ router.use("/candidatos", require("./candidatos"));
 router.use("/zonas-eleitorais", require("./zonas-eleitorais"));
 router.use("/multiplicadores", require("./multiplicadores"));
 router.use("/eventos", require("./eventos"));
+router.use("/grupos", require("./grupos"));
 
 module.exports = router;
