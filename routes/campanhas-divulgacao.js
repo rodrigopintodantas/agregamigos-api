@@ -112,7 +112,35 @@ function gerarAgendamentoPorDisparo(index, mensagensPorTurno, disparoEm, usedKey
 }
 
 function campanhaEhAniversariantes(nome) {
-  return /^aniversariantes do dia\s+\d{2}\/\d{2}$/i.test(String(nome ?? "").trim());
+  return /^aniversariantes do dia\s+\d{2}\/\d{2}(?:\s+\d{2}\/\d{2}_Parte_\d+)?$/i.test(
+    String(nome ?? "").trim(),
+  );
+}
+
+/** Máximo de destinatários por campanha ao criar; acima disso, particiona automaticamente. */
+const MAX_PESSOAS_POR_CAMPANHA = 60;
+
+function labelDataCriacaoSP(agora = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "America/Sao_Paulo",
+    day: "2-digit",
+    month: "2-digit",
+  }).formatToParts(agora);
+  const day = parts.find((p) => p.type === "day")?.value ?? "01";
+  const month = parts.find((p) => p.type === "month")?.value ?? "01";
+  return `${day}/${month}`;
+}
+
+function nomeCampanhaComParte(nomeBase, parteNumero, dataLabel) {
+  return `${String(nomeBase).trim()} ${dataLabel}_Parte_${parteNumero}`;
+}
+
+function particionarLista(lista, tamanho) {
+  const chunks = [];
+  for (let i = 0; i < lista.length; i += tamanho) {
+    chunks.push(lista.slice(i, i + tamanho));
+  }
+  return chunks;
 }
 
 const CAMPOS_RESET_REENVIO_DESTINATARIO = {
@@ -1112,7 +1140,7 @@ router.get("/:id", ...apenasAdmin, async (req, res, next) => {
 router.post("/", ...apenasAdmin, async (req, res, next) => {
   try {
     const nome = req.body?.nome != null ? String(req.body.nome).trim() : "";
-    const campanhaAniversariantes = /^aniversariantes do dia\s+\d{2}\/\d{2}$/i.test(nome);
+    const campanhaAniversariantes = campanhaEhAniversariantes(nome);
     const pessoaIds = Array.isArray(req.body?.pessoa_ids) ? req.body.pessoa_ids.map(Number) : [];
     const modeloIds = Array.isArray(req.body?.modelo_ids) ? req.body.modelo_ids.map(Number) : [];
     const mensagensPorTurnoRaw = Number(req.body?.mensagens_por_turno ?? 2);
@@ -1175,46 +1203,75 @@ router.post("/", ...apenasAdmin, async (req, res, next) => {
       return res.status(400).json({ message: "Um ou mais modelos selecionados nao foram encontrados." });
     }
 
-    const created = await sequelize.transaction(async (transaction) => {
-      const campanha = await CampanhaDivulgacaoModel.create(
-        {
-          nome,
-          status: "montada",
-          total_destinatarios: pessoas.length,
-          total_enviados: 0,
-          mensagens_por_turno: mensagensPorTurno,
-          usuario_id: req.auth?.UsuarioId ?? null,
-          candidatoId: req.auth.CandidatoId,
-          whatsapp_canal_id: canalWhatsapp.id,
-        },
-        { transaction },
-      );
+    const deveParticionar = pessoas.length > MAX_PESSOAS_POR_CAMPANHA;
+    const lotes = deveParticionar
+      ? particionarLista(pessoas, MAX_PESSOAS_POR_CAMPANHA)
+      : [pessoas];
+    const dataParte = labelDataCriacaoSP();
 
-      const payloadDestinatarios = pessoas.map((pessoa, index) => {
-        const modelo = modelos[index % modelos.length];
-        return {
-          campanha_id: campanha.id,
-          pessoa_id: pessoa.id,
-          modelo_mensagem_id: modelo.id,
-          ordem: index + 1,
-          whatsapp: limparNumeros(pessoa.whatsapp).slice(0, 20),
-          turno: "manha",
-          agendado_para: null,
-          status: "pendente",
-          tentativas: 0,
-        };
-      });
+    const criadas = await sequelize.transaction(async (transaction) => {
+      const resultados = [];
+      for (let i = 0; i < lotes.length; i += 1) {
+        const lote = lotes[i];
+        const nomeCampanha = deveParticionar
+          ? nomeCampanhaComParte(nome, i + 1, dataParte)
+          : nome;
 
-      await CampanhaDestinatarioModel.bulkCreate(payloadDestinatarios, { transaction });
-      return campanha;
+        const campanha = await CampanhaDivulgacaoModel.create(
+          {
+            nome: nomeCampanha,
+            status: "montada",
+            total_destinatarios: lote.length,
+            total_enviados: 0,
+            mensagens_por_turno: mensagensPorTurno,
+            usuario_id: req.auth?.UsuarioId ?? null,
+            candidatoId: req.auth.CandidatoId,
+            whatsapp_canal_id: canalWhatsapp.id,
+          },
+          { transaction },
+        );
+
+        const payloadDestinatarios = lote.map((pessoa, index) => {
+          const modelo = modelos[index % modelos.length];
+          return {
+            campanha_id: campanha.id,
+            pessoa_id: pessoa.id,
+            modelo_mensagem_id: modelo.id,
+            ordem: index + 1,
+            whatsapp: limparNumeros(pessoa.whatsapp).slice(0, 20),
+            turno: "manha",
+            agendado_para: null,
+            status: "pendente",
+            tentativas: 0,
+          };
+        });
+
+        await CampanhaDestinatarioModel.bulkCreate(payloadDestinatarios, { transaction });
+        resultados.push(campanha);
+      }
+      return resultados;
     });
 
+    const primeira = criadas[0];
+    const totalDestinatarios = criadas.reduce((acc, c) => acc + (c.total_destinatarios ?? 0), 0);
+    const message =
+      criadas.length === 1
+        ? "Campanha criada com sucesso."
+        : `${criadas.length} campanhas criadas com sucesso (máximo de ${MAX_PESSOAS_POR_CAMPANHA} pessoas por parte).`;
+
     return res.status(201).json({
-      id: created.id,
-      message: "Campanha criada com sucesso.",
-      status: created.status,
-      mensagens_por_turno: created.mensagens_por_turno,
-      total_destinatarios: created.total_destinatarios,
+      id: primeira.id,
+      message,
+      status: primeira.status,
+      mensagens_por_turno: primeira.mensagens_por_turno,
+      total_destinatarios: totalDestinatarios,
+      total_campanhas: criadas.length,
+      campanhas: criadas.map((c) => ({
+        id: c.id,
+        nome: c.nome,
+        status: c.status,
+        total_destinatarios: c.total_destinatarios,
+      })),
     });
   } catch (err) {
     next(err);

@@ -156,6 +156,57 @@ router.patch("/:id/bairros", ...apenasAdmin, async (req, res, next) => {
   }
 });
 
+const SENHA_REINICIO_PADRAO = "123456";
+
+router.post("/:id/reiniciar-senha", ...apenasAdmin, async (req, res, next) => {
+  try {
+    const loginAdmin = String(req.auth?.preferred_username ?? "").trim().toLowerCase();
+    if (loginAdmin !== "admin") {
+      return res.status(403).json({
+        message: "Apenas o usuario com login admin pode reiniciar senhas de usuarios.",
+      });
+    }
+
+    const usuarioId = Number(req.params.id);
+    if (!Number.isInteger(usuarioId) || usuarioId <= 0) {
+      return res.status(400).json({ message: "Usuário inválido." });
+    }
+
+    const vinculo = await UsuarioCandidatoModel.findOne({
+      where: { candidato_id: req.auth.CandidatoId, usuario_id: usuarioId },
+      include: [
+        {
+          model: UsuarioModel,
+          required: true,
+          attributes: ["id", "nome", "login", "senha_hash"],
+        },
+      ],
+    });
+    if (!vinculo?.UsuarioModel) {
+      return res.status(404).json({ message: "Usuário não encontrado para este candidato." });
+    }
+
+    const alvo = vinculo.UsuarioModel;
+    if (String(alvo.login ?? "").trim().toLowerCase() === "admin") {
+      return res.status(400).json({ message: "Não é permitido reiniciar a senha do usuário admin." });
+    }
+
+    const senha_hash = await bcrypt.hash(SENHA_REINICIO_PADRAO, 10);
+    await alvo.update({ senha_hash });
+
+    return res.json({
+      message: `Senha de "${alvo.nome}" reiniciada para ${SENHA_REINICIO_PADRAO}.`,
+      usuario: {
+        id: alvo.id,
+        nome: alvo.nome,
+        login: alvo.login,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.post("/", ...apenasAdmin, async (req, res, next) => {
   try {
     const nome = req.body?.nome != null ? String(req.body.nome).trim() : "";
