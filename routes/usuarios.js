@@ -9,11 +9,16 @@ const {
   salvarBairrosCoordenador,
   normalizarBairro,
 } = require("../services/coordenador-bairro");
+const {
+  listarGruposDisponiveis,
+  listarGruposPorCoordenadores,
+  salvarGruposCoordenador,
+} = require("../services/grupo-coordenador");
 
 const router = express.Router();
 const apenasAdmin = [authBearerCandidatoObrigatorio(), authorize(["Administrador"])];
 
-async function coordenadorDoCandidato(candidatoId, usuarioId) {
+async function usuarioVinculavelDoCandidato(candidatoId, usuarioId) {
   const vinculo = await UsuarioCandidatoModel.findOne({
     where: { candidato_id: candidatoId, usuario_id: usuarioId },
     include: [
@@ -26,7 +31,7 @@ async function coordenadorDoCandidato(candidatoId, usuarioId) {
             model: PapelModel,
             required: true,
             attributes: ["nome"],
-            where: { nome: "Coordenador" },
+            where: { nome: ["Coordenador", "Administrador"] },
           },
         ],
       },
@@ -73,18 +78,25 @@ router.get("/", ...apenasAdmin, async (req, res, next) => {
       .filter(Boolean)
       .sort((a, b) => String(a.nome).localeCompare(String(b.nome), "pt"));
 
-    const coordenadorIds = usuariosBase
-      .filter((usuario) => usuario.papel.nome === "Coordenador")
+    const vinculaveis = ["Coordenador", "Administrador"];
+    const vinculaveisIds = usuariosBase
+      .filter((usuario) => vinculaveis.includes(usuario.papel.nome))
       .map((usuario) => usuario.id);
-    const bairrosPorCoordenador = await listarBairrosVinculadosPorCoordenadores(
+    const bairrosPorUsuario = await listarBairrosVinculadosPorCoordenadores(
       req.auth.CandidatoId,
-      coordenadorIds,
+      vinculaveisIds,
+    );
+    const gruposPorUsuario = await listarGruposPorCoordenadores(
+      req.auth.CandidatoId,
+      vinculaveisIds,
     );
 
     const usuarios = usuariosBase.map((usuario) => ({
       ...usuario,
       bairros:
-        usuario.papel.nome === "Coordenador" ? (bairrosPorCoordenador.get(usuario.id) ?? []) : [],
+        vinculaveis.includes(usuario.papel.nome) ? (bairrosPorUsuario.get(usuario.id) ?? []) : [],
+      grupos:
+        vinculaveis.includes(usuario.papel.nome) ? (gruposPorUsuario.get(usuario.id) ?? []) : [],
     }));
 
     return res.json(usuarios);
@@ -97,6 +109,15 @@ router.get("/bairros-com-pessoas", ...apenasAdmin, async (req, res, next) => {
   try {
     const bairros = await listarBairrosComPessoas(req.auth.CandidatoId);
     return res.json(bairros);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get("/grupos-disponiveis", ...apenasAdmin, async (req, res, next) => {
+  try {
+    const grupos = await listarGruposDisponiveis(req.auth.CandidatoId);
+    return res.json(grupos);
   } catch (err) {
     next(err);
   }
@@ -128,9 +149,9 @@ router.patch("/:id/bairros", ...apenasAdmin, async (req, res, next) => {
       return res.status(404).json({ message: "Usuário não encontrado para este candidato." });
     }
 
-    const ehCoord = await coordenadorDoCandidato(req.auth.CandidatoId, usuarioId);
-    if (!ehCoord) {
-      return res.status(400).json({ message: "Apenas coordenadores podem ter bairros vinculados." });
+    const podeVincular = await usuarioVinculavelDoCandidato(req.auth.CandidatoId, usuarioId);
+    if (!podeVincular) {
+      return res.status(400).json({ message: "Apenas coordenadores ou administradores podem ter bairros vinculados." });
     }
 
     const raw = req.body?.bairros;
@@ -147,6 +168,44 @@ router.patch("/:id/bairros", ...apenasAdmin, async (req, res, next) => {
     return res.json({
       message: "Bairros vinculados com sucesso.",
       bairros,
+    });
+  } catch (err) {
+    if (err?.status) {
+      return res.status(err.status).json({ message: err.message });
+    }
+    next(err);
+  }
+});
+
+router.patch("/:id/grupos", ...apenasAdmin, async (req, res, next) => {
+  try {
+    const usuarioId = Number(req.params.id);
+    if (!Number.isInteger(usuarioId) || usuarioId <= 0) {
+      return res.status(400).json({ message: "Usuário inválido." });
+    }
+
+    const vinculo = await UsuarioCandidatoModel.findOne({
+      where: { candidato_id: req.auth.CandidatoId, usuario_id: usuarioId },
+    });
+    if (!vinculo) {
+      return res.status(404).json({ message: "Usuário não encontrado para este candidato." });
+    }
+
+    const podeVincular = await usuarioVinculavelDoCandidato(req.auth.CandidatoId, usuarioId);
+    if (!podeVincular) {
+      return res.status(400).json({ message: "Apenas coordenadores ou administradores podem ser vinculados a grupos." });
+    }
+
+    const raw = req.body?.grupo_ids ?? req.body?.grupos;
+    if (!Array.isArray(raw)) {
+      return res.status(400).json({ message: "Informe a lista de grupos." });
+    }
+
+    const grupos = await salvarGruposCoordenador(req.auth.CandidatoId, usuarioId, raw);
+
+    return res.json({
+      message: "Grupos vinculados com sucesso.",
+      grupos,
     });
   } catch (err) {
     if (err?.status) {
