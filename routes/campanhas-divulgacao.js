@@ -203,6 +203,30 @@ async function validarCanalWhatsappCampanha(campanha, candidatoId, acaoLabel) {
   return { canalRow };
 }
 
+/** Impede iniciar/reiniciar se já houver outra campanha em andamento no mesmo celular. */
+async function campanhaEmAndamentoNoMesmoCanal(candidatoId, canalId, excluirCampanhaId) {
+  const idCanal = Number(canalId);
+  if (!Number.isInteger(idCanal) || idCanal <= 0) return null;
+  const where = {
+    candidatoId,
+    whatsapp_canal_id: idCanal,
+    status: "em_andamento",
+  };
+  if (excluirCampanhaId != null) {
+    where.id = { [Op.ne]: Number(excluirCampanhaId) };
+  }
+  return CampanhaDivulgacaoModel.findOne({
+    where,
+    attributes: ["id", "nome", "whatsapp_canal_id"],
+  });
+}
+
+function mensagemConflitoCanalEmAndamento(conflito, canalNome) {
+  const nomeCampanha = conflito?.nome ? `"${conflito.nome}"` : "outra campanha";
+  const labelCanal = canalNome ? ` "${canalNome}"` : "";
+  return `Ja existe a campanha ${nomeCampanha} em andamento no celular${labelCanal}. Aguarde a finalizacao ou cancele-a antes de iniciar outra no mesmo celular.`;
+}
+
 async function resetarDestinatariosCanceladosEErros(campanhaId) {
   const [total] = await CampanhaDestinatarioModel.update(CAMPOS_RESET_REENVIO_DESTINATARIO, {
     where: {
@@ -1323,6 +1347,58 @@ router.delete("/:id", ...apenasAdmin, async (req, res, next) => {
   }
 });
 
+router.patch("/:id/whatsapp-canal", ...apenasAdmin, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ message: "ID invalido." });
+    }
+
+    const whatsappCanalId = Number(req.body?.whatsapp_canal_id);
+    if (!Number.isInteger(whatsappCanalId) || whatsappCanalId <= 0) {
+      return res.status(400).json({ message: "Selecione o celular (canal WhatsApp) da campanha." });
+    }
+
+    const campanha = await CampanhaDivulgacaoModel.findOne({
+      where: { id, candidatoId: req.auth.CandidatoId },
+    });
+    if (!campanha) {
+      return res.status(404).json({ message: "Campanha nao encontrada." });
+    }
+
+    if (String(campanha.status) !== "montada") {
+      return res.status(400).json({
+        message: "So e possivel alterar o celular de campanhas com status montada.",
+      });
+    }
+
+    const canalWhatsapp = await WhatsappCanalModel.findOne({
+      where: { id: whatsappCanalId, candidatoId: req.auth.CandidatoId },
+      attributes: ["id", "nome", "numero", "status"],
+    });
+    if (!canalWhatsapp) {
+      return res.status(400).json({ message: "Canal WhatsApp selecionado nao encontrado." });
+    }
+
+    await campanha.update({ whatsapp_canal_id: canalWhatsapp.id });
+
+    return res.status(200).json({
+      id: campanha.id,
+      status: campanha.status,
+      whatsapp_canal_id: canalWhatsapp.id,
+      whatsapp_canal: {
+        id: canalWhatsapp.id,
+        nome: canalWhatsapp.nome,
+        numero: canalWhatsapp.numero,
+        status: canalWhatsapp.status,
+      },
+      message: "Celular da campanha atualizado com sucesso.",
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.post("/:id/iniciar", ...apenasAdmin, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
@@ -1359,6 +1435,17 @@ router.post("/:id/iniciar", ...apenasAdmin, async (req, res, next) => {
     const canal = await validarCanalWhatsappCampanha(campanha, req.auth.CandidatoId, "iniciar");
     if (canal.error) {
       return res.status(400).json({ message: canal.error });
+    }
+
+    const conflitoCanal = await campanhaEmAndamentoNoMesmoCanal(
+      req.auth.CandidatoId,
+      campanha.whatsapp_canal_id,
+      id,
+    );
+    if (conflitoCanal) {
+      return res.status(409).json({
+        message: mensagemConflitoCanalEmAndamento(conflitoCanal, canal.canalRow?.nome),
+      });
     }
 
     const { campanha: atualizada, totalEnfileirado, primeiroAgendadoPara } =
@@ -1420,6 +1507,17 @@ router.post("/:id/reiniciar", ...apenasAdmin, async (req, res, next) => {
     const canal = await validarCanalWhatsappCampanha(campanha, req.auth.CandidatoId, "reiniciar");
     if (canal.error) {
       return res.status(400).json({ message: canal.error });
+    }
+
+    const conflitoCanal = await campanhaEmAndamentoNoMesmoCanal(
+      req.auth.CandidatoId,
+      campanha.whatsapp_canal_id,
+      id,
+    );
+    if (conflitoCanal) {
+      return res.status(409).json({
+        message: mensagemConflitoCanalEmAndamento(conflitoCanal, canal.canalRow?.nome),
+      });
     }
 
     const { totalResetados, campanha: atualizada, totalEnfileirado, primeiroAgendadoPara } =
@@ -1501,6 +1599,17 @@ router.post("/:id/reprocessar-erros", ...apenasAdmin, async (req, res, next) => 
     if (!wppReproc.conectado) {
       return res.status(400).json({
         message: `O celular "${canalReproc.nome}" nao esta conectado. Conecte-o antes de reprocessar.`,
+      });
+    }
+
+    const conflitoCanalReproc = await campanhaEmAndamentoNoMesmoCanal(
+      req.auth.CandidatoId,
+      canalIdReproc,
+      id,
+    );
+    if (conflitoCanalReproc) {
+      return res.status(409).json({
+        message: mensagemConflitoCanalEmAndamento(conflitoCanalReproc, canalReproc.nome),
       });
     }
 
