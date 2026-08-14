@@ -1371,9 +1371,9 @@ router.patch("/:id/whatsapp-canal", ...apenasAdmin, async (req, res, next) => {
       return res.status(404).json({ message: "Campanha nao encontrada." });
     }
 
-    if (String(campanha.status) !== "montada") {
+    if (!STATUS_EDITAVEIS_ANTES_DO_ENVIO.includes(String(campanha.status))) {
       return res.status(400).json({
-        message: "So e possivel alterar o celular de campanhas com status montada.",
+        message: "So e possivel alterar o celular antes de iniciar ou reiniciar o envio.",
       });
     }
 
