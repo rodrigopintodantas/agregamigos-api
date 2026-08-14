@@ -85,6 +85,14 @@ function onListening() {
   } catch (err) {
     console.error("[boot] Falha ao iniciar job de engajamento (sem resposta):", err?.message || err);
   }
+  require("../services/whatsapp-baileys")
+    .restaurarSessoesSalvas()
+    .then(({ restaurados }) => {
+      console.log(`[boot] Canais WhatsApp restaurados: ${restaurados}.`);
+    })
+    .catch((err) => {
+      console.error("[boot] Falha ao restaurar canais WhatsApp:", err?.message || err);
+    });
 }
 
 startServer();

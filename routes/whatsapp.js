@@ -317,6 +317,17 @@ router.post("/send-interno", validarChaveInterna, async (req, res, next) => {
       remote_jid: envio?.remoteJid || null,
     });
   } catch (err) {
+    // Proteção do número (limite diário, pausa, canal ocupado) não é erro de servidor:
+    // devolve 429 com a mensagem intacta para o worker reagendar o destinatário.
+    const mensagemErro = String(err?.message || "");
+    const protecaoAtiva = [
+      whatsappService.ERRO_LIMITE_DIARIO,
+      whatsappService.ERRO_CANAL_PAUSADO,
+      whatsappService.ERRO_CANAL_OCUPADO,
+    ].some((prefixo) => prefixo && mensagemErro.startsWith(prefixo));
+    if (protecaoAtiva) {
+      return res.status(429).json({ message: mensagemErro });
+    }
     return next(err);
   }
 });

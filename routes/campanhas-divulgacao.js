@@ -120,6 +120,11 @@ function campanhaEhAniversariantes(nome) {
 /** Máximo de destinatários por campanha ao criar; acima disso, particiona automaticamente. */
 const MAX_PESSOAS_POR_CAMPANHA = 60;
 
+const MAX_MENSAGENS_POR_TURNO = 50;
+
+/** Status em que o agendamento ainda não foi gerado e o ritmo pode ser ajustado. */
+const STATUS_EDITAVEIS_ANTES_DO_ENVIO = ["montada", "cancelada"];
+
 function labelDataCriacaoSP(agora = new Date()) {
   const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: "America/Sao_Paulo",
@@ -1169,7 +1174,7 @@ router.post("/", ...apenasAdmin, async (req, res, next) => {
     const modeloIds = Array.isArray(req.body?.modelo_ids) ? req.body.modelo_ids.map(Number) : [];
     const mensagensPorTurnoRaw = Number(req.body?.mensagens_por_turno ?? 2);
     const mensagensPorTurno = Number.isInteger(mensagensPorTurnoRaw)
-      ? Math.max(1, Math.min(50, mensagensPorTurnoRaw))
+      ? Math.max(1, Math.min(MAX_MENSAGENS_POR_TURNO, mensagensPorTurnoRaw))
       : 2;
     const whatsappCanalId = Number(req.body?.whatsapp_canal_id);
 
@@ -1393,6 +1398,48 @@ router.patch("/:id/whatsapp-canal", ...apenasAdmin, async (req, res, next) => {
         status: canalWhatsapp.status,
       },
       message: "Celular da campanha atualizado com sucesso.",
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch("/:id/mensagens-por-turno", ...apenasAdmin, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ message: "ID invalido." });
+    }
+
+    const valor = Number(req.body?.mensagens_por_turno);
+    if (!Number.isInteger(valor) || valor < 1 || valor > MAX_MENSAGENS_POR_TURNO) {
+      return res.status(400).json({
+        message: `Informe mensagens por turno entre 1 e ${MAX_MENSAGENS_POR_TURNO}.`,
+      });
+    }
+
+    const campanha = await CampanhaDivulgacaoModel.findOne({
+      where: { id, candidatoId: req.auth.CandidatoId },
+    });
+    if (!campanha) {
+      return res.status(404).json({ message: "Campanha nao encontrada." });
+    }
+
+    // O agendamento é recalculado ao iniciar/reiniciar, por isso a edição só faz
+    // sentido antes desse momento.
+    if (!STATUS_EDITAVEIS_ANTES_DO_ENVIO.includes(String(campanha.status))) {
+      return res.status(400).json({
+        message: "As mensagens por turno so podem ser alteradas antes de iniciar ou reiniciar o envio.",
+      });
+    }
+
+    await campanha.update({ mensagens_por_turno: valor });
+
+    return res.status(200).json({
+      id: campanha.id,
+      status: campanha.status,
+      mensagens_por_turno: valor,
+      message: "Mensagens por turno atualizadas com sucesso.",
     });
   } catch (err) {
     next(err);

@@ -2,7 +2,7 @@ const path = require("path");
 require("dotenv").config({ path: path.resolve(__dirname, "../.env") });
 
 const fs = require("fs");
-const { Worker } = require("bullmq");
+const { Worker, DelayedError } = require("bullmq");
 const {
   CampanhaDivulgacaoModel,
   CampanhaDestinatarioModel,
@@ -71,15 +71,63 @@ function identificarFalhaCodigo(err) {
   const msg = String(err?.message || "").toLowerCase();
   if (msg.includes("numero nao encontrado")) return "nao_whatsapp";
   if (msg.includes("numero invalido") || msg.includes("whatsapp invalido")) return "numero_invalido";
+  if (msg.includes("limite diario de envios")) return "limite_diario";
+  if (msg.includes("canal pausado por protecao")) return "canal_pausado";
+  if (msg.includes("canal ocupado com outro envio")) return "canal_ocupado";
   if (msg.includes("canal whatsapp nao conectado")) return "canal_desconectado";
+  if (msg.includes("nao foi possivel contactar a api interna")) return "api_interna";
   if (msg.includes("jid de confirmacao divergente")) return "jid_divergente";
   if (msg.includes("confirmacao completa")) return "confirmacao_incompleta";
   if (msg.includes("timeout")) return "timeout_ack";
   return "envio_falhou";
 }
 
+/**
+ * Falhas que não são culpa do destinatário: o envio é reagendado em vez de
+ * queimar a pessoa com `erro`. Antes, qualquer oscilação virava falha definitiva.
+ */
+const FALHAS_TRANSITORIAS = new Set([
+  "limite_diario",
+  "canal_pausado",
+  "canal_ocupado",
+  "canal_desconectado",
+  "api_interna",
+]);
+
+/** Só o número em si justifica marcar a pessoa como WhatsApp inválido. */
+const FALHAS_DO_NUMERO = new Set(["nao_whatsapp", "numero_invalido"]);
+
+function atrasoReagendamentoMs(falhaCodigo) {
+  const minutos = (nome, padrao) => {
+    const bruto = Number(process.env[nome]);
+    const valor = Number.isFinite(bruto) ? bruto : padrao;
+    return Math.max(1, Math.trunc(valor)) * 60 * 1000;
+  };
+  if (falhaCodigo === "limite_diario") return minutos("CAMPANHA_REAGENDAR_LIMITE_MIN", 60);
+  if (falhaCodigo === "canal_pausado") return minutos("CAMPANHA_REAGENDAR_PAUSA_MIN", 10);
+  if (falhaCodigo === "canal_desconectado") return minutos("CAMPANHA_REAGENDAR_DESCONEXAO_MIN", 5);
+  return minutos("CAMPANHA_REAGENDAR_PADRAO_MIN", 2);
+}
+
+/**
+ * Resolve spintax `{opção a|opção b}` sorteando uma alternativa por envio.
+ * Mensagens idênticas em massa são um dos principais sinais de disparo automatizado.
+ */
+function resolverSpintax(texto) {
+  let resultado = String(texto || "");
+  const padrao = /\{([^{}]*\|[^{}]*)\}/;
+  // Limite de iterações evita laço infinito com chaves malformadas.
+  for (let i = 0; i < 50 && padrao.test(resultado); i += 1) {
+    resultado = resultado.replace(padrao, (_todo, grupo) => {
+      const opcoes = String(grupo).split("|");
+      return opcoes[Math.floor(Math.random() * opcoes.length)].trim();
+    });
+  }
+  return resultado;
+}
+
 function aplicarVariaveisMensagem(template, pessoa) {
-  const texto = String(template || "");
+  const texto = resolverSpintax(template);
   const nomeCompleto = String(pessoa?.nome || "").trim();
   const primeiroNome = nomeCompleto ? nomeCompleto.split(/\s+/)[0] : "";
   const bairro = String(pessoa?.EnderecoModel?.bairro || pessoa?.EnderecoModel?.cidade || "").trim();
@@ -104,6 +152,8 @@ async function enviarViaApi(numero, mensagem, candidatoId, whatsappCanalId, opco
   if (!Number.isInteger(canalId) || canalId <= 0) {
     throw new Error("whatsapp_canal_id invalido para envio WhatsApp.");
   }
+  // O envio espera o ritmo humanizado do canal na API, por isso o timeout é largo.
+  const timeoutMs = Number(process.env.CAMPANHA_ENVIO_TIMEOUT_MS || 240000);
   let response;
   try {
     response = await fetch(`${apiUrl}/whatsapp/send-interno`, {
@@ -119,6 +169,7 @@ async function enviarViaApi(numero, mensagem, candidatoId, whatsappCanalId, opco
       candidato_id: cid,
       whatsapp_canal_id: canalId,
     }),
+    signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (err) {
     const msg = String(err?.message || err);
@@ -187,7 +238,7 @@ async function marcarPessoaErroWhatsapp(pessoaId) {
   );
 }
 
-async function processarEnvio(job) {
+async function processarEnvio(job, token) {
   const destinatarioId = Number(job?.data?.destinatarioId);
   const campanhaId = Number(job?.data?.campanhaId);
   if (!destinatarioId || !campanhaId) throw new Error("Payload do job invalido.");
@@ -310,6 +361,23 @@ async function processarEnvio(job) {
   } catch (err) {
     await transaction.rollback();
     const falhaCodigo = identificarFalhaCodigo(err);
+
+    if (FALHAS_TRANSITORIAS.has(falhaCodigo)) {
+      const proximaTentativa = new Date(Date.now() + atrasoReagendamentoMs(falhaCodigo));
+      await destinatario.update({
+        status: "pendente",
+        agendado_para: proximaTentativa,
+        falha_entrega: false,
+        falha_codigo: null,
+        falha_em: null,
+        erro_ultimo: `Reagendado (${falhaCodigo}): ${limitarErro(err)}`,
+      });
+      await atualizarResumoCampanha(campanhaId);
+      // moveToDelayed + DelayedError devolve o job à fila sem gastar tentativa.
+      await job.moveToDelayed(proximaTentativa.getTime(), token);
+      throw new DelayedError();
+    }
+
     await destinatario.update({
       status: "erro",
       tentativas: destinatario.tentativas + 1,
@@ -318,19 +386,23 @@ async function processarEnvio(job) {
       falha_em: new Date(),
       erro_ultimo: limitarErro(err),
     });
-    await marcarPessoaErroWhatsapp(destinatario?.PessoaModel?.id);
-    throw err;
-  } finally {
+    if (FALHAS_DO_NUMERO.has(falhaCodigo)) {
+      await marcarPessoaErroWhatsapp(destinatario?.PessoaModel?.id);
+    }
     await atualizarResumoCampanha(campanhaId);
+    throw err;
   }
+
+  await atualizarResumoCampanha(campanhaId);
 }
 
 async function iniciarWorker() {
   await sequelize.authenticate();
   console.log(`[worker] API interna (envio WhatsApp): ${INTERNAL_API_URL_RESOLVIDA}`);
   const worker = new Worker(QUEUE_NAME, processarEnvio, {
+    // O ritmo real é imposto por canal dentro da API; aqui basta não empilhar jobs.
+    concurrency: Number(process.env.CAMPANHA_ENVIO_CONCURRENCY || 2),
     connection: redisConnection,
-    concurrency: Number(process.env.CAMPANHA_ENVIO_CONCURRENCY || 4),
   });
 
   worker.on("ready", () => {
